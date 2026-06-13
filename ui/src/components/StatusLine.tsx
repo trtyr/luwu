@@ -1,3 +1,6 @@
+// components/StatusLine.tsx — Claude Code-style status bar
+// Layout: [phase] model · cwd · git-branch · context%
+// Below: context-aware keyboard hint line with · separators
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
@@ -9,14 +12,10 @@ interface StatusLineProps {
   contextPercent: number;
   phase: string;
   iteration?: number;
+  hasSuggestions?: boolean;
 }
 
-/**
- * Bottom status line — Claude Code style
- * Layout: [phase] model · cwd · git-branch · context%
- */
-export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, iteration }: StatusLineProps) {
-  // Context color: green < 50%, yellow < 80%, red >= 80%
+export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, iteration, hasSuggestions }: StatusLineProps) {
   const ctxColor =
     contextPercent < 50 ? theme.success :
     contextPercent < 80 ? theme.warning :
@@ -33,39 +32,38 @@ export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, itera
     phase === 'connecting' ? theme.warning :
     theme.inactive;
 
+  // Context-aware hint line (like Claude Code's PromptInputFooterLeftSide)
+  const hints: string[] = [];
+  if (phase === 'thinking' || phase === 'streaming') {
+    hints.push('esc to interrupt');
+  } else {
+    hints.push('? for shortcuts');
+    hints.push('↑↓ history');
+    hints.push('/ commands');
+  }
+
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box>
-        {/* Phase indicator */}
         <Text color={phaseColor} bold>{phaseLabel} </Text>
         {iteration !== undefined && iteration > 0 && (
           <Text color={theme.subtle}>iter {iteration} </Text>
         )}
-        <Text color={theme.subtle}>│ </Text>
-
-        {/* Model */}
+        <Text color={theme.subtle}>· </Text>
         <Text color={theme.claude}>{model}</Text>
         <Text color={theme.subtle}> · </Text>
-
-        {/* CWD — short form */}
         <Text color={theme.inactive}>{shortenPath(cwd)}</Text>
-
-        {/* Git branch */}
         {gitBranch && (
           <>
             <Text color={theme.subtle}> · </Text>
             <Text color={theme.suggestion}>{gitBranch}</Text>
           </>
         )}
-
-        {/* Context usage */}
         <Text color={theme.subtle}> · </Text>
         <Text color={ctxColor}>{contextPercent}%</Text>
       </Box>
-
-      {/* Input hint line */}
       <Box>
-        <Text color={theme.subtle}>↵ send · ctrl+c cancel · esc clear</Text>
+        <Text dimColor>{hints.join(' · ')}</Text>
       </Box>
     </Box>
   );

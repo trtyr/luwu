@@ -40,6 +40,8 @@ export function App() {
   const abortRef = useRef<AbortController | null>(null);
   const spinnerVerbRef = useRef<string | undefined>(undefined);
 
+  const { executeCommand } = useCommands(model);
+
   // Init
   useEffect(() => {
     (async () => {
