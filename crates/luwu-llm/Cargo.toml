@@ -1,0 +1,15 @@
+[package]
+name = "luwu-llm"
+description = "LLM provider implementations for luwu (OpenAI, Anthropic, Google, etc.)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+luwu-core = { path = "../luwu-core" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }

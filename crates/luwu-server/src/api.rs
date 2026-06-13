@@ -1,0 +1,730 @@
+//! HTTP API handlers — OpenAI-compatible endpoints + agent event stream.
+//!
+//! Endpoints:
+//! - `GET  /health`                         — Health check
+//! - `GET  /v1/models`                      — List available models
+//! - `POST /v1/chat/completions`            — Chat (OpenAI-compatible, real SSE streaming)
+//! - `GET  /v1/sessions`                    — List sessions
+//! - `POST /v1/sessions`                    — Create session
+//! - `GET  /v1/sessions/{id}`               — Get session info
+//! - `DELETE /v1/sessions/{id}`             — Delete session
+//! - `POST /v1/sessions/{id}/chat`          — Agent chat with full event stream (SSE)
+//! - `POST /v1/sessions/{id}/cancel`        — Cancel running turn
+
+use std::convert::Infallible;
+use std::sync::Arc;
+
+use axum::extract::{Path, State};
+use axum::response::sse::{Event as SseEvent, Sse};
+use axum::response::IntoResponse;
+use axum::Json;
+use axum::Router;
+use serde::{Deserialize, Serialize};
+use tower_http::cors::CorsLayer;
+
+use luwu_core::{
+    EventBus, Message, SessionManager, SessionSummary, ToolRegistry, TurnEngine,
+    TurnEvent,
+};
+use luwu_llm::openai::OpenAiProvider;
+use luwu_tools;
+
+use crate::config::Config;
+
+/// Build a ToolRegistry with all built-in tools registered.
+fn builtin_tool_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    for tool in luwu_tools::all_builtin_tools() {
+        registry.register(tool);
+    }
+    registry
+}
+
+// ---------------------------------------------------------------------------
+// App state
+// ---------------------------------------------------------------------------
+
+pub struct AppState {
+    pub config: Config,
+    pub sessions: SessionManager,
+}
+
+// ---------------------------------------------------------------------------
+// Request / Response types (OpenAI-compatible)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct ChatRequest {
+    pub model: Option<String>,
+    pub messages: Vec<ChatMessage>,
+    pub stream: Option<bool>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub tools: Option<serde_json::Value>,
+    /// Optional session ID — if provided, messages are appended to this session.
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+// Non-streaming response types.
+#[derive(Debug, Serialize)]
+pub struct ChatResponse {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<ChatChoice>,
+    pub usage: ChatUsage,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatChoice {
+    pub index: u32,
+    pub message: ChatResponseMessage,
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatResponseMessage {
+    pub role: String,
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Default, Serialize, Clone)]
+pub struct ChatUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+// Streaming chunk types.
+#[derive(Debug, Serialize)]
+pub struct ChatChunk {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<ChatChunkChoice>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatChunkChoice {
+    pub index: u32,
+    pub delta: ChatChunkDelta,
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatChunkDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+// Models response.
+#[derive(Debug, Serialize)]
+pub struct ModelsResponse {
+    pub object: String,
+    pub data: Vec<ModelInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub owned_by: String,
+}
+
+// Session request types.
+#[derive(Debug, Deserialize)]
+pub struct CreateSessionRequest {
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateSessionResponse {
+    pub id: String,
+    pub model: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionListResponse {
+    pub sessions: Vec<SessionSummary>,
+}
+
+// Agent chat request (session-scoped, full event stream).
+#[derive(Debug, Deserialize)]
+pub struct AgentChatRequest {
+    pub message: String,
+    /// Whether to stream SSE events (default: true).
+    #[serde(default = "default_true")]
+    pub stream: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        // Health & models.
+        .route("/health", axum::routing::get(health))
+        .route("/v1/models", axum::routing::get(list_models))
+        // OpenAI-compatible chat completions.
+        .route(
+            "/v1/chat/completions",
+            axum::routing::post(chat_completions),
+        )
+        // Session management.
+        .route("/v1/sessions", axum::routing::get(list_sessions))
+        .route("/v1/sessions", axum::routing::post(create_session))
+        .route(
+            "/v1/sessions/{id}",
+            axum::routing::get(get_session).delete(delete_session),
+        )
+        // Agent event stream.
+        .route(
+            "/v1/sessions/{id}/chat",
+            axum::routing::post(agent_chat),
+        )
+        // Cancel.
+        .route(
+            "/v1/sessions/{id}/cancel",
+            axum::routing::post(cancel_turn),
+        )
+        .layer(CorsLayer::permissive())
+        .with_state(Arc::new(state))
+}
+
+// ---------------------------------------------------------------------------
+// Handlers — Health & Models
+// ---------------------------------------------------------------------------
+
+async fn health() -> &'static str {
+    "ok"
+}
+
+async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse> {
+    let mut models = Vec::new();
+
+    if let Some(default_model) = &state.config.default.model {
+        models.push(ModelInfo {
+            id: default_model.clone(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: state
+                .config
+                .default
+                .provider
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+        });
+    }
+
+    for (name, provider) in &state.config.providers {
+        if let Some(model) = &provider.model {
+            models.push(ModelInfo {
+                id: model.clone(),
+                object: "model".to_string(),
+                created: 0,
+                owned_by: name.clone(),
+            });
+        }
+    }
+
+    Json(ModelsResponse {
+        object: "list".to_string(),
+        data: models,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Handlers — OpenAI-compatible Chat Completions (real streaming)
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::collapsible_if)]
+async fn chat_completions(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ChatRequest>,
+) -> axum::response::Response {
+    let resolved = match state.config.resolve(None) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let model = req.model.as_deref().unwrap_or(&resolved.model);
+
+    // Extract the last user message.
+    let user_msg = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .and_then(|m| {
+            m.content.as_ref().and_then(|c| match c {
+                serde_json::Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_default();
+
+    let should_stream = req.stream.unwrap_or(false);
+
+    // Build engine.
+    let provider = OpenAiProvider::with_base_url(&resolved.api_key, &resolved.base_url);
+    let tools = builtin_tool_registry();
+    let events = EventBus::new(256);
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let engine = TurnEngine::new(std::sync::Arc::new(provider), tools, events, working_dir);
+
+    // Convert request messages to core Messages.
+    let mut messages: Vec<Message> = Vec::new();
+    for msg in &req.messages {
+        if msg.role == "user" {
+            if let Some(serde_json::Value::String(text)) = &msg.content {
+                messages.push(Message::user(text));
+            }
+        }
+    }
+
+    if should_stream {
+        // === Real SSE streaming ===
+        let chunk_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+        let model_str = model.to_string();
+
+        let event_rx = engine
+            .run_stream(
+                luwu_core::SessionId::new(),
+                model_str.clone(),
+                messages,
+                user_msg,
+                None,
+            )
+            .await;
+
+        let stream = async_stream::stream! {
+            // Role chunk.
+            let role_chunk = ChatChunk {
+                id: chunk_id.clone(),
+                object: "chat.completion.chunk".to_string(),
+                created: chrono::Utc::now().timestamp(),
+                model: model_str.clone(),
+                choices: vec![ChatChunkChoice {
+                    index: 0,
+                    delta: ChatChunkDelta {
+                        role: Some("assistant".to_string()),
+                        content: None,
+                    },
+                    finish_reason: None,
+                }],
+            };
+            yield Ok::<_, Infallible>(
+                SseEvent::default().data(serde_json::to_string(&role_chunk).unwrap())
+            );
+
+            // Forward TurnEvents as SSE chunks.
+            let mut rx = event_rx;
+            while let Some(event) = rx.recv().await {
+                match event {
+                    TurnEvent::TextDelta { delta } => {
+                        let chunk = ChatChunk {
+                            id: chunk_id.clone(),
+                            object: "chat.completion.chunk".to_string(),
+                            created: chrono::Utc::now().timestamp(),
+                            model: model_str.clone(),
+                            choices: vec![ChatChunkChoice {
+                                index: 0,
+                                delta: ChatChunkDelta {
+                                    role: None,
+                                    content: Some(delta),
+                                },
+                                finish_reason: None,
+                            }],
+                        };
+                        yield Ok(
+                            SseEvent::default().data(serde_json::to_string(&chunk).unwrap())
+                        );
+                    }
+                    TurnEvent::Done { .. } => {
+                        // Final chunk with finish_reason: "stop".
+                        let done_chunk = ChatChunk {
+                            id: chunk_id.clone(),
+                            object: "chat.completion.chunk".to_string(),
+                            created: chrono::Utc::now().timestamp(),
+                            model: model_str.clone(),
+                            choices: vec![ChatChunkChoice {
+                                index: 0,
+                                delta: ChatChunkDelta {
+                                    role: None,
+                                    content: None,
+                                },
+                                finish_reason: Some("stop".to_string()),
+                            }],
+                        };
+                        yield Ok(
+                            SseEvent::default().data(serde_json::to_string(&done_chunk).unwrap())
+                        );
+                        yield Ok(SseEvent::default().data("[DONE]"));
+                        break;
+                    }
+                    TurnEvent::Cancelled => {
+                        let done_chunk = ChatChunk {
+                            id: chunk_id.clone(),
+                            object: "chat.completion.chunk".to_string(),
+                            created: chrono::Utc::now().timestamp(),
+                            model: model_str.clone(),
+                            choices: vec![ChatChunkChoice {
+                                index: 0,
+                                delta: ChatChunkDelta {
+                                    role: None,
+                                    content: None,
+                                },
+                                finish_reason: Some("cancel".to_string()),
+                            }],
+                        };
+                        yield Ok(
+                            SseEvent::default().data(serde_json::to_string(&done_chunk).unwrap())
+                        );
+                        yield Ok(SseEvent::default().data("[DONE]"));
+                        break;
+                    }
+                    TurnEvent::Error { message } => {
+                        let error_chunk = serde_json::json!({
+                            "error": { "message": message, "type": "server_error" }
+                        });
+                        yield Ok(
+                            SseEvent::default().data(serde_json::to_string(&error_chunk).unwrap())
+                        );
+                        break;
+                    }
+                    // For OpenAI compat, we skip tool events in this endpoint.
+                    // They are available via the /v1/sessions/{id}/chat endpoint.
+                    _ => {}
+                }
+            }
+        };
+
+        let sse = Sse::new(stream).keep_alive(
+            axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
+        );
+
+        sse.into_response()
+    } else {
+        // === Non-streaming ===
+        let mut session = luwu_core::SessionData::new(model);
+
+        for msg in &req.messages {
+            if msg.role == "user" {
+                if let Some(serde_json::Value::String(text)) = &msg.content {
+                    session.push_message(Message::user(text));
+                }
+            }
+        }
+
+        match engine.run(&mut session, user_msg).await {
+            Ok(result) => {
+                let response = ChatResponse {
+                    id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                    object: "chat.completion".to_string(),
+                    created: chrono::Utc::now().timestamp(),
+                    model: model.to_string(),
+                    choices: vec![ChatChoice {
+                        index: 0,
+                        message: ChatResponseMessage {
+                            role: "assistant".to_string(),
+                            content: Some(result.assistant_text),
+                            tool_calls: None,
+                        },
+                        finish_reason: Some("stop".to_string()),
+                    }],
+                    usage: ChatUsage::default(),
+                };
+                Json(response).into_response()
+            }
+            Err(e) => {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handlers — Sessions
+// ---------------------------------------------------------------------------
+
+async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<SessionListResponse> {
+    let sessions = state.sessions.list().await;
+    Json(SessionListResponse { sessions })
+}
+
+async fn create_session(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateSessionRequest>,
+) -> axum::response::Response {
+    let resolved = match state.config.resolve(None) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let model = req.model.unwrap_or(resolved.model);
+    let session_ref = state.sessions.create(&model).await;
+
+    Json(CreateSessionResponse {
+        id: session_ref.id,
+        model,
+    })
+    .into_response()
+}
+
+async fn get_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    match state.sessions.get(&id).await {
+        Some(session) => {
+            let summary = SessionSummary {
+                id: session.data.id.to_string(),
+                model: session.data.model.clone(),
+                message_count: session.data.messages.len(),
+                title: session.data.title.clone(),
+                created_at: session.data.created_at,
+                updated_at: session.data.updated_at,
+                is_running: session.is_running,
+            };
+            Json(summary).into_response()
+        }
+        None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
+    }
+}
+
+async fn delete_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    if state.sessions.delete(&id).await {
+        (axum::http::StatusCode::OK, "Deleted").into_response()
+    } else {
+        (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handlers — Agent Chat (full event stream with tool visibility)
+// ---------------------------------------------------------------------------
+
+async fn agent_chat(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<AgentChatRequest>,
+) -> axum::response::Response {
+    // Resolve provider.
+    let resolved = match state.config.resolve(None) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    // Get session.
+    let session = match state.sessions.get(&id).await {
+        Some(s) => s,
+        None => {
+            return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
+        }
+    };
+
+    if session.is_running {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            "Session already has a running turn",
+        )
+            .into_response();
+    }
+
+    // Mark session as running and get cancel token.
+    let cancel_token = match state.sessions.set_running(&id, true).await {
+        Some(t) => t,
+        None => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to set running state",
+            )
+                .into_response();
+        }
+    };
+
+    // Build engine.
+    let provider = OpenAiProvider::with_base_url(&resolved.api_key, &resolved.base_url);
+    let tools = builtin_tool_registry();
+    let events = EventBus::new(256);
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let engine = TurnEngine::new(std::sync::Arc::new(provider), tools, events, working_dir);
+
+    let model = session.data.model.clone();
+    let messages = session.data.messages.clone();
+    let session_id = session.data.id.clone();
+    let sessions = state.sessions.clone();
+    let id_clone = id.clone();
+
+    // Start streaming.
+    let event_rx = engine
+        .run_stream(session_id, model, messages, req.message, Some(cancel_token))
+        .await;
+
+    if req.stream {
+        // SSE — forward ALL TurnEvents as JSON.
+        let stream = async_stream::stream! {
+            let mut rx = event_rx;
+            let _final_messages: Vec<Message> = Vec::new();
+            let mut _assistant_text = String::new();
+
+            while let Some(event) = rx.recv().await {
+                // Serialize the event as-is — client gets full agent visibility.
+                let json = serde_json::to_string(&event).unwrap();
+                yield Ok::<_, Infallible>(SseEvent::default().data(json));
+
+                // Track state for session update.
+                match &event {
+                    TurnEvent::Done {
+                        assistant_text: text,
+                        ..
+                    } => {
+                        _assistant_text = text.clone();
+                        break;
+                    }
+                    TurnEvent::Cancelled | TurnEvent::Error { .. } => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Update session.
+            // For now, we just mark it as not running.
+            // TODO: properly update messages in session.
+            let _ = sessions.set_running(&id_clone, false).await;
+        };
+
+        let sse = Sse::new(stream).keep_alive(
+            axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
+        );
+
+        sse.into_response()
+    } else {
+        // Non-streaming — collect all events and return the final result.
+        // We still use the streaming API internally, just buffer everything.
+        let stream = async_stream::stream! {
+            let mut rx = event_rx;
+            let mut collected_text = String::new();
+
+            while let Some(event) = rx.recv().await {
+                match event {
+                    TurnEvent::TextDelta { delta } => {
+                        collected_text.push_str(&delta);
+                    }
+                    TurnEvent::Done { .. } => {
+                        let resp = ChatResponse {
+                            id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                            object: "chat.completion".to_string(),
+                            created: chrono::Utc::now().timestamp(),
+                            model: session.data.model.clone(),
+                            choices: vec![ChatChoice {
+                                index: 0,
+                                message: ChatResponseMessage {
+                                    role: "assistant".to_string(),
+                                    content: Some(collected_text),
+                                    tool_calls: None,
+                                },
+                                finish_reason: Some("stop".to_string()),
+                            }],
+                            usage: ChatUsage::default(),
+                        };
+                        yield Ok::<_, Infallible>(
+                            SseEvent::default().data(serde_json::to_string(&resp).unwrap())
+                        );
+                        break;
+                    }
+                    TurnEvent::Cancelled => {
+                        let err = serde_json::json!({"error": "cancelled"});
+                        yield Ok(
+                            SseEvent::default().data(serde_json::to_string(&err).unwrap())
+                        );
+                        break;
+                    }
+                    TurnEvent::Error { message } => {
+                        let err = serde_json::json!({"error": message});
+                        yield Ok(
+                            SseEvent::default().data(serde_json::to_string(&err).unwrap())
+                        );
+                        break;
+                    }
+                    _ => {} // Skip tool events for non-streaming.
+                }
+            }
+
+            let _ = sessions.set_running(&id_clone, false).await;
+        };
+
+        let sse = Sse::new(stream).keep_alive(
+            axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
+        );
+
+        sse.into_response()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handlers — Cancel
+// ---------------------------------------------------------------------------
+
+async fn cancel_turn(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    if state.sessions.cancel(&id).await {
+        Json(serde_json::json!({"status": "cancelled"})).into_response()
+    } else {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            "Session not found or not running",
+        )
+            .into_response()
+    }
+}

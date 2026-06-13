@@ -1,0 +1,18 @@
+[package]
+name = "luwu-tools"
+description = "Built-in tool implementations for luwu (bash, file ops, search, etc.)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+luwu-core = { path = "../luwu-core" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+fff-search = { workspace = true }
+rayon = "1.10"
+kawat = "0.1.5"
+mdka = "2.1.6"
