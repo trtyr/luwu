@@ -27,6 +27,7 @@ pub mod storage;
 pub mod tool;
 pub mod tool_registry;
 pub mod prompt;
+pub mod skill;
 
 // Re-export the core types for convenience.
 pub use cycle::{CycleAction, CycleState};
@@ -40,4 +41,5 @@ pub use session_manager::{ManagedSession, SessionManager, SessionSummary};
 pub use storage::Storage;
 pub use tool::{Tool, ToolContext, ToolOutput};
 pub use tool_registry::ToolRegistry;
-pub use prompt::{default_system_prompt, system_prompt_with_tools, writer_system_prompt};
+pub use prompt::{default_system_prompt, system_prompt_with_tools, system_prompt_with_tools_and_skills, writer_system_prompt};
+pub use skill::{Skill, SkillFrontmatter, SkillRegistry};

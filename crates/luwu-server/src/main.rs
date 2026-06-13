@@ -42,13 +42,29 @@ async fn main() {
     println!("\x1b[2mconfig:   {}\x1b[0m", config::config_path().display());
     println!();
 
+    // Discover skills.
+    let luwu_home = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".luwu");
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let skills = luwu_core::SkillRegistry::discover(&luwu_home, &working_dir)
+        .unwrap_or_else(|e| {
+            tracing::warn!("Skill discovery failed: {e}");
+            luwu_core::SkillRegistry::new()
+        });
+    println!("\x1b[2mskills:   {} loaded\x1b[0m", skills.len());
+
     // Build app state.
     let state = AppState {
         config,
         sessions: SessionManager::new(),
-        working_dir: std::path::PathBuf::from("."),
+        working_dir: working_dir.clone(),
+        skills,
     };
-    let app = api::router(state);
+
+    let app = crate::api::router(state);
+    println!("  GET    /v1/skills             List skills");
+    println!("  GET    /v1/skills/{{name}}     Get skill detail");
 
     // Start server.
     let addr = SocketAddr::from(([127, 0, 0, 1], 51740));

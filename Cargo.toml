@@ -31,4 +31,5 @@ tower-http = { version = "0.6", features = ["cors"] }
 tokio-stream = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-stream = "0.3"
+serde_yaml = "0.9"
 fff-search = "0.9"

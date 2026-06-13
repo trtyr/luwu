@@ -22,6 +22,22 @@ pub fn system_prompt_with_tools<S: AsRef<str>>(tool_names: &[S]) -> String {
     )
 }
 
+/// Build a system prompt that includes tools AND skill metadata.
+/// Skills use progressive disclosure: only name+description are injected (Level 1).
+/// Full instructions are loaded on-demand when the agent activates a skill.
+pub fn system_prompt_with_tools_and_skills<S: AsRef<str>>(
+    tool_names: &[S],
+    skills: &crate::skill::SkillRegistry,
+) -> String {
+    let base = system_prompt_with_tools(tool_names);
+    let skill_prompt = skills.skill_metadata_prompt();
+    if skill_prompt.is_empty() {
+        base
+    } else {
+        format!("{}\n\n{}", base, skill_prompt)
+    }
+}
+
 static SYSTEM_PROMPT: &str = r#"
 You are luwu (陆吾), an AI agent assistant.
 

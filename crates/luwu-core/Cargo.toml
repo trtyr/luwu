@@ -13,3 +13,4 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
+serde_yaml = { workspace = true }

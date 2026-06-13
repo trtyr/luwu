@@ -22,7 +22,7 @@ use crate::llm::{LlmEvent, LlmProvider, LlmRequest};
 use crate::message::{ContentPart, Message};
 use crate::session::SessionData;
 use crate::tool_registry::ToolRegistry;
-use crate::prompt::system_prompt_with_tools;
+use crate::prompt::system_prompt_with_tools_and_skills;
 
 // ---------------------------------------------------------------------------
 // Turn result
@@ -92,6 +92,7 @@ impl Default for CancelToken {
 pub struct TurnEngine {
     provider: std::sync::Arc<dyn LlmProvider>,
     tools: ToolRegistry,
+    skills: crate::skill::SkillRegistry,
     events: EventBus,
     working_dir: PathBuf,
     /// Maximum number of LLM → tool → LLM iterations before forcing a stop.
@@ -103,12 +104,14 @@ impl TurnEngine {
     pub fn new(
         provider: std::sync::Arc<dyn LlmProvider>,
         tools: ToolRegistry,
+        skills: crate::skill::SkillRegistry,
         events: EventBus,
         working_dir: PathBuf,
     ) -> Self {
         Self {
             provider,
             tools,
+            skills,
             events,
             working_dir,
             max_iterations: 50,
@@ -322,10 +325,11 @@ impl TurnEngine {
 
         let provider = self.provider.clone();
         let tools = self.tools.clone();
+        let skills = self.skills.clone();
         let events = self.events.clone();
         let working_dir = self.working_dir.clone();
         let max_iterations = self.max_iterations;
-        let system_prompt = system_prompt_with_tools(&tools.tool_names());
+        let system_prompt = system_prompt_with_tools_and_skills(&tools.tool_names(), &skills);
 
         tokio::spawn(async move {
             if let Some(cancel) = &cancel {
@@ -472,6 +476,23 @@ impl TurnEngine {
                     }).await;
                     current_text = reasoning_text;
                 }
+
+                // Detect skill reference in assistant text and inject instructions.
+                if let Some(skill_name) = skills.detect_skill_reference(&current_text) {
+                    if let Some(skill) = skills.get(&skill_name) {
+                        tracing::info!("Skill activated: {}", skill_name);
+                        let inject = format!(
+                            "\n\n[Skill activated: {}]\n{}\n\nFollow these instructions for the current task.",
+                            skill.name, skill.instructions
+                        );
+                        all_messages.push(crate::message::Message {
+                            role: crate::message::Role::User,
+                            content: vec![crate::message::ContentPart::Text { text: inject }],
+                            name: None,
+                            tool_call_id: None,
+                        });
+                    }
+                }
                 if !current_text.is_empty() {
                     content_parts.push(ContentPart::Text {
                         text: std::mem::take(&mut current_text),
@@ -611,7 +632,7 @@ impl TurnEngine {
             model: session.model.clone(),
             messages: session.messages.clone(),
             tools: self.tools.definitions(),
-            system_prompt: Some(system_prompt_with_tools(&self.tools.tool_names())),
+            system_prompt: Some(system_prompt_with_tools_and_skills(&self.tools.tool_names(), &self.skills)),
             temperature: None,
             max_tokens: None,
             stop_sequences: Vec::new(),

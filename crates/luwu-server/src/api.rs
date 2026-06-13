@@ -55,6 +55,7 @@ pub struct AppState {
     pub config: Config,
     pub sessions: SessionManager,
     pub working_dir: std::path::PathBuf,
+    pub skills: luwu_core::SkillRegistry,
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +233,15 @@ pub fn router(state: AppState) -> Router {
             "/v1/sessions/{id}/history",
             axum::routing::get(search_history),
         )
+        // Skill endpoints.
+        .route(
+            "/v1/skills",
+            axum::routing::get(list_skills),
+        )
+        .route(
+            "/v1/skills/{name}",
+            axum::routing::get(get_skill_detail),
+        )
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
 }
@@ -322,7 +332,7 @@ async fn chat_completions(
     let tools = builtin_tool_registry();
     let events = EventBus::new(256);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let engine = TurnEngine::new(std::sync::Arc::new(provider), tools, events, working_dir);
+    let engine = TurnEngine::new(std::sync::Arc::new(provider), tools, state.skills.clone(), events, working_dir);
 
     // Convert request messages to core Messages.
     let mut messages: Vec<Message> = Vec::new();
@@ -668,7 +678,7 @@ async fn agent_chat(
     let tools = builtin_tool_registry();
     let events = EventBus::new(256);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let engine = TurnEngine::new(provider_arc.clone(), tools, events, working_dir.clone());
+    let engine = TurnEngine::new(provider_arc.clone(), tools, state.skills.clone(), events, working_dir.clone());
 
     // Memory store and cycle state.
     let luwu_home = dirs::home_dir()
@@ -924,6 +934,43 @@ async fn cancel_turn(
     }
 }
 
+// ── Skill API Handlers ────────────────────────────────────────
+
+/// GET /v1/skills — list all loaded skills.
+async fn list_skills(
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Response {
+    let skills = state.skills.list();
+    let summary: Vec<serde_json::Value> = skills
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "description": s.description,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "skills": summary })).into_response()
+}
+
+/// GET /v1/skills/{name} — get skill details.
+async fn get_skill_detail(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> axum::response::Response {
+    let Some(skill) = state.skills.get(&name) else {
+        return (axum::http::StatusCode::NOT_FOUND, "Skill not found").into_response();
+    };
+    let files = state.skills.skill_files(&name);
+    Json(serde_json::json!({
+        "name": skill.name,
+        "description": skill.description,
+        "instructions": skill.instructions,
+        "base_path": skill.base_path.to_string_lossy(),
+        "files": files,
+    }))
+    .into_response()
+}
 // ── Memory API Handlers ────────────────────────────────────────
 
 /// GET /v1/sessions/{id}/checkpoint — get latest checkpoint.

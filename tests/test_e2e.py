@@ -678,6 +678,60 @@ def test_history():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# S8: Skill System
+# ═══════════════════════════════════════════════════════════════════════
+
+@test("S8.1 GET /v1/skills lists loaded skills")
+def test_skills_list():
+    resp = http.get(f"{API_BASE}/skills")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "skills" in data
+    assert len(data["skills"]) >= 1
+    names = [s["name"] for s in data["skills"]]
+    assert "echo-test" in names, f"Expected echo-test skill, got: {names}"
+    # Each skill has name + description
+    for s in data["skills"]:
+        assert "name" in s and "description" in s
+    print(f"  ✅ {len(data['skills'])} skill(s) found")
+
+
+@test("S8.2 GET /v1/skills/{name} returns skill detail")
+def test_skill_detail():
+    resp = http.get(f"{API_BASE}/skills/echo-test")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "echo-test"
+    assert "echo" in data["description"].lower()
+    assert "instructions" in data
+    assert "# Echo Test" in data["instructions"]
+    assert "files" in data
+    assert "SKILL.md" in data["files"]
+    print(f"  ✅ Skill detail: instructions={len(data['instructions'])} chars, files={data['files']}")
+
+
+@test("S8.3 GET /v1/skills/{name} — 404 for unknown")
+def test_skill_404():
+    resp = http.get(f"{API_BASE}/skills/nonexistent")
+    assert resp.status_code == 404
+    print(f"  ✅ 404 for unknown skill")
+
+
+@test("S8.4 Skill metadata injected into agent system prompt")
+def test_skill_in_prompt():
+    sid = create_session()
+    raw = agent_chat(sid, "test skill echo test")
+    events = parse_sse_events(raw)
+    text = extract_text(events)
+    tool_out = get_completed_output(events)
+    combined = text + tool_out
+    # The LLM should have activated the skill and run echo
+    has_echo = "echo-test" in combined.lower() or "skill" in combined.lower()
+    assert has_echo, f"Expected skill activation in response: {combined[:200]}"
+    print(f"  ✅ Skill activated by agent: {combined[:60]}...")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # S8: Cleanup
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -756,7 +810,12 @@ def main():
         # S7: Memory Endpoints
         test_checkpoint,
         test_history,
-        # S8: Cleanup
+        # S8: Skill System
+        test_skills_list,
+        test_skill_detail,
+        test_skill_404,
+        test_skill_in_prompt,
+        # S9: Cleanup
         test_cleanup,
     ]
 
