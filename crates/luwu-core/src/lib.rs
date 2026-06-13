@@ -37,7 +37,7 @@ pub use event::{Event, EventBus, SessionId, TurnEvent, TurnId};
 pub use llm::{LlmEvent, LlmProvider, LlmRequest, LlmUsage, ToolDefinition};
 pub use message::{ContentPart, Message, Role};
 pub use session::{SessionData, SessionMeta};
-pub use session_manager::{ManagedSession, SessionManager, SessionSummary, TrySetRunningError};
+pub use session_manager::{ManagedSession, RunningGuard, SessionManager, SessionSummary, TrySetRunningError};
 pub use storage::Storage;
 pub use tool::{Tool, ToolContext, ToolOutput};
 pub use tool_registry::ToolRegistry;

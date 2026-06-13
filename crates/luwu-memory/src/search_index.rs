@@ -6,7 +6,7 @@
 
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 /// A single search result from the FTS5 index.
@@ -19,8 +19,9 @@ pub struct SearchResult {
 }
 
 /// SQLite FTS5 full-text search index.
+#[derive(Clone)]
 pub struct SearchIndex {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
     #[allow(dead_code)]
     db_path: PathBuf,
 }
@@ -47,7 +48,7 @@ impl SearchIndex {
         debug!("SearchIndex opened at {}", path.display());
 
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
             db_path: path.to_path_buf(),
         })
     }
@@ -61,7 +62,7 @@ impl SearchIndex {
     ) -> Result<(), rusqlite::Error> {
         let timestamp = chrono::Utc::now().to_rfc3339();
         let tokenized = tokenize_cjk(content);
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("search index lock poisoned");
         conn.execute(
             "INSERT INTO memory_fts (layer, content, original, session_id, timestamp) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -74,7 +75,7 @@ impl SearchIndex {
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, rusqlite::Error> {
         let tokenized_query = tokenize_cjk(query);
         let fts_query = sanitize_query(&tokenized_query);
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("search index lock poisoned");
 
         let mut stmt = conn.prepare(
             "SELECT layer, original, session_id, timestamp \
@@ -101,7 +102,7 @@ impl SearchIndex {
 
     /// Delete all entries for a specific session.
     pub fn clear_session(&self, session_id: &str) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("search index lock poisoned");
         conn.execute(
             "DELETE FROM memory_fts WHERE session_id = ?1",
             params![session_id],
@@ -111,7 +112,7 @@ impl SearchIndex {
 
     /// Clear the entire index.
     pub fn clear_all(&self) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("search index lock poisoned");
         conn.execute("DELETE FROM memory_fts", [])?;
         Ok(())
     }

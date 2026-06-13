@@ -9,6 +9,7 @@ luwu-core = { path = "../luwu-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 rusqlite = { version = "0.37", features = ["bundled"] }

@@ -165,7 +165,7 @@ impl SessionManager {
         let id = data.id.to_string();
 
         // Persist to disk before inserting into memory.
-        self.persist_session(&id, &data);
+        self.persist_session(&id, &data).await;
 
         let session = ManagedSession {
             data,
@@ -209,7 +209,7 @@ impl SessionManager {
         if let Some(session) = sessions.get_mut(id) {
             session.data.messages = messages;
             session.data.updated_at = Utc::now();
-            self.persist_session(id, &session.data);
+            self.persist_session(id, &session.data).await;
             true
         } else {
             false
@@ -222,7 +222,7 @@ impl SessionManager {
         if let Some(session) = sessions.get_mut(id) {
             session.data.messages.extend(new_messages);
             session.data.updated_at = Utc::now();
-            self.persist_session(id, &session.data);
+            self.persist_session(id, &session.data).await;
             true
         } else {
             false
@@ -277,7 +277,7 @@ impl SessionManager {
     pub async fn delete(&self, id: &str) -> bool {
         let existed = self.sessions.write().await.remove(id).is_some();
         if existed {
-            self.remove_session_file(id);
+            self.remove_session_file(id).await;
         }
         existed
     }
@@ -286,7 +286,7 @@ impl SessionManager {
 
     /// Write a session's data to disk as JSON.
     /// Called while holding the write lock — synchronous to ensure consistency.
-    fn persist_session(&self, id: &str, data: &SessionData) {
+    async fn persist_session(&self, id: &str, data: &SessionData) {
         if self.sessions_dir.as_os_str().is_empty() {
             return;
         }
@@ -294,7 +294,7 @@ impl SessionManager {
         let path = self.sessions_dir.join(format!("{id}.json"));
         match serde_json::to_string_pretty(data) {
             Ok(json) => {
-                if let Err(err) = std::fs::write(&path, json) {
+                if let Err(err) = tokio::fs::write(&path, json).await {
                     warn!("Failed to persist session {id}: {err}");
                 }
             }
@@ -305,12 +305,12 @@ impl SessionManager {
     }
 
     /// Remove a session's file from disk.
-    fn remove_session_file(&self, id: &str) {
+    async fn remove_session_file(&self, id: &str) {
         if self.sessions_dir.as_os_str().is_empty() {
             return;
         }
         let path = self.sessions_dir.join(format!("{id}.json"));
-        let _ = std::fs::remove_file(path);
+        let _ = tokio::fs::remove_file(path).await;
     }
 }
 
@@ -347,5 +347,38 @@ impl Clone for ManagedSession {
             cancel_token: self.cancel_token.clone(),
             is_running: self.is_running,
         }
+    }
+}
+
+/// RAII guard that resets `is_running` to false when dropped.
+///
+/// Create this right after `try_set_running()` and hold it for the
+/// duration of the agent turn. When it goes out of scope (normal exit,
+/// early return, panic, stream cancellation), it spawns a task to reset
+/// the running flag — preventing stuck sessions.
+pub struct RunningGuard {
+    sessions: SessionManager,
+    id: String,
+}
+
+impl RunningGuard {
+    /// Create a guard for the given session.
+    /// The caller must have already called `try_set_running()` successfully.
+    pub fn new(sessions: SessionManager, id: impl Into<String>) -> Self {
+        Self {
+            sessions,
+            id: id.into(),
+        }
+    }
+}
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        let sessions = self.sessions.clone();
+        let id = self.id.clone();
+        // Drop can't be async — spawn a task to do the reset.
+        tokio::spawn(async move {
+            sessions.set_running(&id, false).await;
+        });
     }
 }

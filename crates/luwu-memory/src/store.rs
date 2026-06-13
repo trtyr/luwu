@@ -265,7 +265,11 @@ impl MemoryStore {
         );
         append_to_file(&self.corrections_path, &line)?;
         if let Some(idx) = &self.search_index {
-            let _ = idx.index_entry("correction", entry, "");
+            let idx = idx.clone();
+            let entry = entry.to_string();
+            tokio::task::spawn_blocking(move || {
+                let _ = idx.index_entry("correction", &entry, "");
+            });
         }
         Ok(())
     }
@@ -282,7 +286,11 @@ impl MemoryStore {
         );
         append_to_file(&self.global_path, &line)?;
         if let Some(idx) = &self.search_index {
-            let _ = idx.index_entry("global", entry, "");
+            let idx = idx.clone();
+            let entry = entry.to_string();
+            tokio::task::spawn_blocking(move || {
+                let _ = idx.index_entry("global", &entry, "");
+            });
         }
         Ok(())
     }
@@ -298,7 +306,11 @@ impl MemoryStore {
         );
         append_to_file(&path, &line)?;
         if let Some(idx) = &self.search_index {
-            let _ = idx.index_entry("project", entry, "");
+            let idx = idx.clone();
+            let entry = entry.to_string();
+            tokio::task::spawn_blocking(move || {
+                let _ = idx.index_entry("project", &entry, "");
+            });
         }
         Ok(())
     }

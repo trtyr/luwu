@@ -31,7 +31,7 @@ use tokio::task::JoinSet;
 use luwu_core::{
     message::Role,
     LlmProvider,
-    EventBus, Message, SessionManager, SessionSummary, TrySetRunningError, ToolRegistry, TurnEngine,
+    EventBus, Message, RunningGuard, SessionManager, SessionSummary, TrySetRunningError, ToolRegistry, TurnEngine,
     TurnEvent, CycleState, CycleAction,
 };
 use luwu_llm::openai::OpenAiProvider;
@@ -667,6 +667,9 @@ async fn agent_chat(
             return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
         }
     };
+
+    // Safety net: auto-reset is_running on drop (panic, disconnect, cancel).
+    let _running_guard = RunningGuard::new(state.sessions.clone(), id.clone());
 
     // Get session for provider resolution.
     let session = match state.sessions.get(&id).await {

@@ -87,6 +87,32 @@ impl Config {
             .clone()
             .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
+        // ── Field validation (Phase 4.4) ──
+        if provider.api_key.trim().is_empty() {
+            return Err(ConfigError::InvalidConfig(
+                format!("Provider '{name}' has an empty api_key"),
+            ));
+        }
+        if base_url.is_empty() || !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+            return Err(ConfigError::InvalidConfig(
+                format!("Provider '{name}' base_url must be a valid http(s) URL, got: {base_url}"),
+            ));
+        }
+        if let Some(t) = provider.temperature {
+            if !(0.0..=2.0).contains(&t) {
+                return Err(ConfigError::InvalidConfig(
+                    format!("Provider '{name}' temperature must be 0.0–2.0, got: {t}"),
+                ));
+            }
+        }
+        if let Some(mt) = provider.max_tokens {
+            if mt == 0 {
+                return Err(ConfigError::InvalidConfig(
+                    format!("Provider '{name}' max_tokens must be > 0"),
+                ));
+            }
+        }
+
         Ok(ResolvedConfig {
             provider_name: name.to_string(),
             api_key: provider.api_key.clone(),
@@ -115,4 +141,6 @@ pub enum ConfigError {
     NoDefaultProvider,
     #[error("Provider '{0}' not found")]
     ProviderNotFound(String),
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
 }
