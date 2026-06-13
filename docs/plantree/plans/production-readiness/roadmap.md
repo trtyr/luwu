@@ -40,13 +40,25 @@ GitHub Actions workflow (build + test + clippy -D warnings + fmt check). 19 clip
 ### B1 — Service Layer Extraction — `bf69115`
 AgentService extracted from agent.rs handler: correction detection, engine execution, cycle management, memory worker dispatch, message persistence. Handler is now thin HTTP transport (327→167 lines, -49%). AgentEvent enum separates domain events from transport formatting. Both streaming + non-streaming paths preserved.
 
+### C1+C2 — Unit Tests (core + llm) — `475b738`
+Session_manager: 12 tests (CRUD, try_set_running concurrent race, RunningGuard RAII Drop, cancel, append_messages, persistence roundtrip). Tool_registry: 8 tests (register/get/execute/clone). Retry: 6 tests (is_retryable_status, exponential backoff schedule, cap, Retry-After, jitter bounds). Error: 7 tests (truncate_body, Display, From<LlmError>).
+
+### C1 — Tool Registry Tests — `364f722`
+ToolRegistry register/get/execute/clone with EchoTool mock. 8 tests covering empty registry, multiple register, duplicate replace, definitions, execute unknown→error, execute calls tool, clone shares Arc.
+
+### C3 — Server Integration Tests — `8a1174b`
+luwu-server now has lib.rs (binary+library dual target). 13 handler integration tests via axum oneshot: health/models/sessions CRUD lifecycle/skills/stats/404 paths. No real LLM calls — pure infrastructure paths.
+
+### C4 — Stats Endpoint + Tracing — `7ad8db3`
+GET /v1/stats returns {sessions:{total,running}, workers:{active}}. AgentService::new + run instrumented with tracing spans. Stats handler has 2 tests (empty counts, reflects created session). **Workspace total: 87 tests, 0 clippy warnings.**
+
 ## In Progress
 
 (none)
 
 ## Next
 
-(none — all planned phases complete)
+(none — all planned phases and hardening complete)
 
 ## Deferred
 
