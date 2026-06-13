@@ -7,10 +7,14 @@ import { MessageResponse } from './MessageResponse.js';
 import { Markdown } from './Markdown.js';
 import { ToolResult } from './ToolResult.js';
 import type { DisplayMessage } from '../core/types.js';
+import { ReasoningBlock } from './ReasoningBlock.js';
 
 export function AssistantMessage({ msg, addMargin }: { msg: DisplayMessage; addMargin: boolean }) {
   return (
     <Box flexDirection="column" marginTop={addMargin ? 1 : 0}>
+      {msg.reasoning && (
+        <ReasoningBlock reasoning={msg.reasoning} addMargin={false} />
+      )}
       <Box flexDirection="row">
         <Text color={theme.text} bold>{LAYOUT.ASSISTANT_DOT}</Text>
         <Box flexDirection="column" marginLeft={1} flexShrink={1} flexGrow={1}>

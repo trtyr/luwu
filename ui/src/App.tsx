@@ -141,7 +141,7 @@ export function App() {
           case 'done': break;
           case 'cancelled':
             setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, content: accText + ' [已取消]' } : m));
+              m.id === assistantId ? { ...m, content: accText } : m));
             break;
           case 'error':
             setMessages(prev => prev.map(m =>
