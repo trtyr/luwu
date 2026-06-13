@@ -1,29 +1,33 @@
-// Main TUI application — Claude Code style
-import React, { useState, useCallback, useRef } from 'react';
+// App.tsx — composition layer: wires hooks → components
+// No business logic lives here. All logic is in hooks/ and services/.
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import Spinner from 'ink-spinner';
 import { theme } from './theme.js';
-import { MessageItem } from './components/MessageItem.js';
+import { MessageList } from './components/MessageList.js';
 import { StatusLine } from './components/StatusLine.js';
 import { PromptInput } from './components/PromptInput.js';
-import type { DisplayMessage, ToolCallInfo, Phase, StreamEvent } from './types.js';
-import { checkHealth, createSession, streamChat, cancelTurn, getModels } from './client.js';
+import { Spinner } from './components/Spinner.js';
+import type { DisplayMessage, ToolCallInfo, Phase, StreamEvent } from './core/types.js';
+import { isBusy } from './core/state.js';
+import { LAYOUT } from './core/constants.js';
+import { useCommands } from './hooks/useCommands.js';
+import {
+  checkHealth, createSession, streamChat, cancelTurn, getModels,
+} from './services/api.js';
 
-// ── helpers ──
 let msgCounter = 0;
-function uid(): string { return `m-${Date.now()}-${msgCounter++}`; }
+const uid = (): string => `m-${Date.now()}-${msgCounter++}`;
 
 function getCwd(): string { return process.cwd(); }
 
 function getGitBranchSync(): string | null {
   try {
-    const result = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', 'HEAD']);
-    if (result.exitCode !== 0) return null;
-    return new TextDecoder().decode(result.stdout).trim() || null;
+    const r = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', 'HEAD']);
+    if (r.exitCode !== 0) return null;
+    return new TextDecoder().decode(r.stdout).trim() || null;
   } catch { return null; }
 }
 
-// ── app ──
 export function App() {
   const { exit } = useApp();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -34,30 +38,45 @@ export function App() {
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [contextPct, setContextPct] = useState(0);
   const [iteration, setIteration] = useState(0);
+  const [thinkingElapsed, setThinkingElapsed] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const thinkingStartRef = useRef<number | null>(null);
+  const spinnerVerbRef = useRef<string | undefined>(undefined);
 
-  // ── init ──
-  React.useEffect(() => {
+  const { executeCommand } = useCommands(model);
+
+  // Thinking timer
+  useEffect(() => {
+    if (phase !== 'thinking') {
+      if (thinkingStartRef.current !== null) {
+        const elapsed = Date.now() - thinkingStartRef.current;
+        thinkingStartRef.current = null;
+        setThinkingElapsed(elapsed);
+        const t = setTimeout(() => setThinkingElapsed(null), LAYOUT.THINKING_DURATION_DISPLAY);
+        return () => clearTimeout(t);
+      }
+    } else if (thinkingStartRef.current === null) {
+      thinkingStartRef.current = Date.now();
+    }
+  }, [phase]);
+
+  // Init
+  useEffect(() => {
     (async () => {
       try {
         const ok = await checkHealth();
-        if (!ok) {
-          setError('Cannot reach luwu-server — is it running?');
-          setPhase('error');
-          return;
-        }
+        if (!ok) { setError('Cannot reach luwu-server'); setPhase('error'); return; }
         const id = await createSession();
         setSessionId(id);
-        const branch = getGitBranchSync();
-        setGitBranch(branch);
-        const models = await getModels();
-        if (models.length > 0 && models[0].id) setModel(models[0].id);
+        setGitBranch(getGitBranchSync());
+        try {
+          const models = await getModels();
+          if (models.length > 0 && models[0].id) setModel(models[0].id);
+        } catch { /* default */ }
         setPhase('ready');
         setMessages([{
-          id: uid(),
-          role: 'system',
-          content: '陆吾 v0.1.0 — 输入消息开始对话',
-          timestamp: Date.now(),
+          id: uid(), role: 'system', timestamp: Date.now(),
+          content: '陆吾 v0.1.0 — 输入消息开始对话 · ↑↓ 浏览历史 · / 查看命令',
         }]);
       } catch (e) {
         setError(String(e));
@@ -66,13 +85,21 @@ export function App() {
     })();
   }, []);
 
-  // ── send message ──
+  // Slash command handler
+  const handleCommand = useCallback(async (raw: string) => {
+    const result = await executeCommand(raw);
+    if (result.type === 'clear') { setMessages([]); return; }
+    if (result.type === 'exit') { exit(); return; }
+    setMessages(prev => [...prev, {
+      id: uid(), role: 'system', timestamp: Date.now(), content: result.content,
+    }]);
+  }, [executeCommand, exit]);
+
+  // Send message
   const sendMessage = useCallback(async (text: string) => {
     if (!sessionId || !text.trim()) return;
 
-    const userMsg: DisplayMessage = {
-      id: uid(), role: 'user', content: text.trim(), timestamp: Date.now(),
-    };
+    const userMsg: DisplayMessage = { id: uid(), role: 'user', content: text.trim(), timestamp: Date.now() };
     const assistantId = uid();
     setMessages(prev => [...prev, userMsg, {
       id: assistantId, role: 'assistant', content: '', tools: [], timestamp: Date.now(),
@@ -80,11 +107,13 @@ export function App() {
 
     setPhase('thinking');
     setIteration(0);
+    spinnerVerbRef.current = undefined;
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     let accText = '';
+    let accReasoning = '';
     const toolMap = new Map<string, ToolCallInfo>();
 
     try {
@@ -93,39 +122,32 @@ export function App() {
           case 'text_delta':
             accText += ev.delta || '';
             setPhase('streaming');
-            setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, content: accText } : m
-            ));
+            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: accText } : m));
             break;
 
           case 'reasoning_delta':
-            // Ignore reasoning for now — don't show in UI
+            accReasoning += ev.delta || '';
             break;
 
           case 'tool_call': {
-            const tc: ToolCallInfo = {
-              name: ev.name || 'unknown',
-              args: ev.arguments || JSON.stringify(ev.args || {}),
-              status: 'running',
-            };
-            toolMap.set(tc.name, tc);
+            spinnerVerbRef.current = ev.name || ev.tool_name || 'tool';
+            const name = ev.name || ev.tool_name || 'unknown';
+            const args = ev.arguments
+              ? (typeof ev.arguments === 'string' ? ev.arguments : JSON.stringify(ev.arguments))
+              : '';
+            toolMap.set(name, { name, args, status: 'running' });
             setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, tools: Array.from(toolMap.values()) } : m
-            ));
+              m.id === assistantId ? { ...m, tools: Array.from(toolMap.values()) } : m));
             break;
           }
 
-          case 'tool_started':
-            break;
-
           case 'tool_completed': {
-            const name = ev.name || '';
+            const name = ev.name || ev.tool_name || '';
             const ex = toolMap.get(name);
-            if (ex) { ex.result = ev.result; ex.status = 'done'; }
-            else toolMap.set(name, { name, args: '', result: ev.result, status: 'done' });
+            if (ex) { ex.result = ev.result || ev.output; ex.status = 'done'; }
+            else toolMap.set(name, { name, args: '', result: ev.result || ev.output, status: 'done' });
             setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, tools: Array.from(toolMap.values()) } : m
-            ));
+              m.id === assistantId ? { ...m, tools: Array.from(toolMap.values()) } : m));
             break;
           }
 
@@ -134,29 +156,21 @@ export function App() {
             setContextPct(Math.min(99, 15 + Math.floor(accText.length / 200)));
             break;
 
-          case 'done':
-            break;
-
+          case 'done': break;
           case 'cancelled':
             setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, content: accText + '\n[cancelled]' } : m
-            ));
+              m.id === assistantId ? { ...m, content: accText + ' [已取消]' } : m));
             break;
-
           case 'error':
             setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, content: accText + `\n⚠ ${ev.message}` } : m
-            ));
+              m.id === assistantId ? { ...m, content: accText + `\n⚠ ${ev.message}` } : m));
             break;
         }
       }, controller.signal);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
-        const msg = String(e);
-        setError(msg);
         setMessages(prev => prev.map(m =>
-          m.id === assistantId ? { ...m, content: accText + `\n⚠ ${msg}` } : m
-        ));
+          m.id === assistantId ? { ...m, content: accText + `\n⚠ ${String(e)}` } : m));
       }
     } finally {
       abortRef.current = null;
@@ -164,7 +178,7 @@ export function App() {
     }
   }, [sessionId]);
 
-  // ── Ctrl+C: cancel or exit ──
+  // Ctrl+C
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
       if (abortRef.current) {
@@ -176,65 +190,54 @@ export function App() {
     }
   });
 
-  // ── error state ──
+  // Error state
   if (phase === 'error') {
     return (
       <Box flexDirection="column" padding={1}>
         <Text color={theme.error} bold>✗ 连接失败</Text>
         <Text color={theme.error}>{error}</Text>
         <Text color={theme.subtle}>请确认 luwu-server 正在运行: cargo run</Text>
-        <Text color={theme.subtle}>按任意键退出…</Text>
       </Box>
     );
   }
 
-  // ── connecting state ──
+  // Connecting state
   if (phase === 'connecting') {
     return (
       <Box flexDirection="column" padding={1}>
         <Text>
-          <Text color={theme.claude}><Spinner type="dots" /></Text>
+          <Text color={theme.claude}>⠋</Text>
           <Text color={theme.subtle}> 正在连接 luwu-server…</Text>
         </Text>
       </Box>
     );
   }
 
-  // ── main UI ──
-  const thinking = phase === 'thinking' || phase === 'streaming';
+  const busy = isBusy(phase);
 
   return (
     <Box flexDirection="column">
-      {/* message history */}
-      <Box flexDirection="column">
-        {messages.map(m => (
-          <MessageItem key={m.id} msg={m} />
-        ))}
+      <MessageList messages={messages} />
 
-        {/* thinking spinner */}
-        {phase === 'thinking' && (
-          <Box marginLeft={2}>
-            <Text color={theme.claude}><Spinner type="dots" /></Text>
-            <Text color={theme.subtle}> thinking…</Text>
-          </Box>
-        )}
+      <Spinner phase={phase} verb={spinnerVerbRef.current} />
 
-        {/* streaming cursor */}
-        {phase === 'streaming' && (
-          <Box marginLeft={2}>
-            <Text color={theme.claude}>▎</Text>
-          </Box>
-        )}
-      </Box>
+      {thinkingElapsed !== null && !busy && (
+        <Box marginLeft={2}>
+          <Text color={theme.subtle}> ⏱ {(thinkingElapsed / 1000).toFixed(1)}s</Text>
+        </Box>
+      )}
 
-      {/* input */}
+      {phase === 'streaming' && (
+        <Box marginLeft={2}><Text color={theme.claude}>▎</Text></Box>
+      )}
+
       <PromptInput
         onSubmit={sendMessage}
-        disabled={thinking}
+        onCommand={handleCommand}
+        disabled={busy}
         phase={phase}
       />
 
-      {/* status line */}
       <StatusLine
         model={model}
         cwd={getCwd()}

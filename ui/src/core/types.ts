@@ -1,6 +1,8 @@
-// luwu TUI shared types
+// core/types.ts — Shared types (zero dependencies, no React/Ink imports)
 
 export type Role = 'user' | 'assistant' | 'system';
+
+export type Phase = 'connecting' | 'ready' | 'thinking' | 'streaming' | 'error';
 
 export interface ToolCallInfo {
   name: string;
@@ -15,19 +17,21 @@ export interface DisplayMessage {
   content: string;
   tools?: ToolCallInfo[];
   timestamp: number;
+  reasoning?: string;
 }
 
 export interface StreamEvent {
   type: string;
-  delta?: string;       // text_delta / reasoning_delta 用 delta
+  delta?: string;
   content?: string;
   name?: string;
-  arguments?: string;
+  tool_name?: string;
+  arguments?: unknown;
   args?: Record<string, unknown>;
   result?: string;
+  output?: string;
   message?: string;
   iteration?: number;
-  // done 事件附带
   assistant_text?: string;
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }
@@ -42,4 +46,14 @@ export interface StatsResponse {
   workers: number;
 }
 
-export type Phase = 'connecting' | 'ready' | 'thinking' | 'streaming' | 'error';
+export interface CommandDef {
+  name: string;
+  description: string;
+  aliases?: string[];
+}
+
+export interface SuggestionItem {
+  id: string;
+  displayText: string;
+  description: string;
+}

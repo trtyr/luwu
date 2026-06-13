@@ -1,7 +1,8 @@
-// luwu server API client
-import type { StreamEvent, ModelInfo, StatsResponse } from './types';
+// services/api.ts — luwu server API client
+// (migrated from client.ts, same API surface)
+import type { StreamEvent, ModelInfo, StatsResponse } from '../core/types.js';
 
-const BASE_URL = process.env.LUWU_URL || 'http://127.0.0.1:51740';
+export const BASE_URL = process.env.LUWU_URL || 'http://127.0.0.1:51740';
 
 export async function checkHealth(): Promise<boolean> {
   const res = await fetch(`${BASE_URL}/health`);
@@ -33,6 +34,26 @@ export async function getStats(): Promise<StatsResponse> {
   const res = await fetch(`${BASE_URL}/v1/stats`);
   if (!res.ok) throw new Error(`Stats request failed (${res.status})`);
   return res.json();
+}
+
+export async function getSkills(): Promise<Array<{ name: string; description?: string }>> {
+  const res = await fetch(`${BASE_URL}/v1/skills`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function listSessions(): Promise<Array<{
+  id: string; model: string; message_count: number; is_running: boolean;
+}>> {
+  const res = await fetch(`${BASE_URL}/v1/sessions`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.sessions ?? [];
+}
+
+export async function deleteSession(id: string): Promise<boolean> {
+  const res = await fetch(`${BASE_URL}/v1/sessions/${id}`, { method: 'DELETE' });
+  return res.ok;
 }
 
 export async function streamChat(
@@ -69,8 +90,6 @@ export async function streamChat(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-
-      // SSE events are separated by double newlines
       const parts = buffer.split('\n\n');
       buffer = parts.pop() || '';
 
