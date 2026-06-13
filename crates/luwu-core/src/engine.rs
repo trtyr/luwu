@@ -394,6 +394,7 @@ impl TurnEngine {
                 // Consume the LLM stream, emitting text deltas as they arrive.
                 let mut content_parts: Vec<ContentPart> = Vec::new();
                 let mut current_text = String::new();
+                let mut reasoning_text = String::new();
                 let mut pending_tool_calls: HashMap<String, PendingToolCall> = HashMap::new();
 
                 while let Some(event_result) = stream_rx.recv().await {
@@ -422,6 +423,12 @@ impl TurnEngine {
                                 delta: delta.clone(),
                             }).await;
                             current_text.push_str(&delta);
+                        }
+                        LlmEvent::ReasoningDelta(reasoning) => {
+                            let _ = tx.send(TurnEvent::ReasoningDelta {
+                                delta: reasoning.clone(),
+                            }).await;
+                            reasoning_text.push_str(&reasoning);
                         }
 
                         LlmEvent::ToolCallBegin { id, name } => {
@@ -457,7 +464,14 @@ impl TurnEngine {
                     }
                 }
 
-                // Flush remaining text.
+                // Flush remaining text. If only reasoning was produced (no text content),
+                // emit it as a TextDelta so consumers always get text.
+                if current_text.is_empty() && !reasoning_text.is_empty() {
+                    let _ = tx.send(TurnEvent::TextDelta {
+                        delta: reasoning_text.clone(),
+                    }).await;
+                    current_text = reasoning_text;
+                }
                 if !current_text.is_empty() {
                     content_parts.push(ContentPart::Text {
                         text: std::mem::take(&mut current_text),
@@ -613,6 +627,7 @@ impl TurnEngine {
 
         let mut content_parts: Vec<ContentPart> = Vec::new();
         let mut current_text = String::new();
+        let mut reasoning_text = String::new();
         let mut tool_calls: HashMap<String, PendingToolCall> = HashMap::new();
         let mut final_usage = None;
 
@@ -622,6 +637,10 @@ impl TurnEngine {
             match event {
                 LlmEvent::TextDelta(delta) => {
                     current_text.push_str(&delta);
+                }
+
+                LlmEvent::ReasoningDelta(reasoning) => {
+                    reasoning_text.push_str(&reasoning);
                 }
 
                 LlmEvent::ToolCallBegin { id, name } => {
@@ -658,7 +677,11 @@ impl TurnEngine {
             }
         }
 
-        // Flush remaining text.
+        // Flush remaining text. If only reasoning was produced (no text content),
+        // treat the reasoning as the response content.
+        if current_text.is_empty() && !reasoning_text.is_empty() {
+            current_text = reasoning_text;
+        }
         if !current_text.is_empty() {
             content_parts.push(ContentPart::Text {
                 text: current_text,

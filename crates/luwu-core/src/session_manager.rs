@@ -42,6 +42,20 @@ impl SessionManager {
     /// Create a new session and store it.
     pub async fn create(&self, model: impl Into<String>) -> ManagedSessionRef {
         let data = SessionData::new(model);
+        self.insert_session(data).await
+    }
+
+    /// Create a session with a specific provider.
+    pub async fn create_with_provider(
+        &self,
+        model: impl Into<String>,
+        provider: impl Into<String>,
+    ) -> ManagedSessionRef {
+        let data = SessionData::with_provider(model, provider);
+        self.insert_session(data).await
+    }
+
+    async fn insert_session(&self, data: SessionData) -> ManagedSessionRef {
         let id = data.id.to_string();
 
         let session = ManagedSession {
@@ -85,6 +99,18 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(id) {
             session.data.messages = messages;
+            session.data.updated_at = Utc::now();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Atomically append messages to a session (write-lock, no read-modify-write race).
+    pub async fn append_messages(&self, id: &str, new_messages: Vec<Message>) -> bool {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(id) {
+            session.data.messages.extend(new_messages);
             session.data.updated_at = Utc::now();
             true
         } else {

@@ -45,6 +45,10 @@ pub enum LlmEvent {
     /// A chunk of text content from the model.
     TextDelta(String),
 
+    /// A chunk of reasoning/thinking content from the model.
+    /// Models like GLM-4.7, DeepSeek, MiniMax emit this during thinking.
+    ReasoningDelta(String),
+
     /// The model is starting a tool call.
     ToolCallBegin { id: String, name: String },
     /// A chunk of tool-call arguments (streamed incrementally).

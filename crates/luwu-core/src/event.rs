@@ -130,6 +130,12 @@ pub enum TurnEvent {
         delta: String,
     },
 
+    /// Reasoning/thinking content from the model (GLM, DeepSeek, MiniMax).
+    #[serde(rename = "reasoning_delta")]
+    ReasoningDelta {
+        delta: String,
+    },
+
     /// The LLM is requesting a tool call.
     #[serde(rename = "tool_call")]
     ToolCall {

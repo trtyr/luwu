@@ -164,6 +164,8 @@ pub struct ModelInfo {
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
     pub model: Option<String>,
+    /// Optional provider name to use (overrides default).
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -296,7 +298,8 @@ async fn chat_completions(
         }
     };
 
-    let model = req.model.as_deref().unwrap_or(&resolved.model);
+    // Always use the config model — ignore client-provided model name.
+    let model = resolved.model.clone();
 
     // Extract the last user message.
     let user_msg = req
@@ -334,7 +337,7 @@ async fn chat_completions(
     if should_stream {
         // === Real SSE streaming ===
         let chunk_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
-        let model_str = model.to_string();
+        let model_str = model.clone();
 
         let event_rx = engine
             .run_stream(
@@ -368,9 +371,57 @@ async fn chat_completions(
 
             // Forward TurnEvents as SSE chunks.
             let mut rx = event_rx;
+            let mut last_reasoning: Option<String> = None; // Track reasoning to avoid duplicate content
             while let Some(event) = rx.recv().await {
                 match event {
                     TurnEvent::TextDelta { delta } => {
+                        // Skip if this is a reasoning fallback duplicate.
+                        if let Some(ref reasoning) = last_reasoning {
+                            if delta == *reasoning {
+                                continue; // Engine fallback emitted reasoning as TextDelta — skip to avoid duplicate
+                            }
+                        }
+                        let chunk = ChatChunk {
+                            id: chunk_id.clone(),
+                            object: "chat.completion.chunk".to_string(),
+                            created: chrono::Utc::now().timestamp(),
+                            model: model_str.clone(),
+                            choices: vec![ChatChunkChoice {
+                                index: 0,
+                                delta: ChatChunkDelta {
+                                    role: None,
+                                    content: Some(delta),
+                                },
+                                finish_reason: None,
+                            }],
+                        };
+                        yield Ok(
+                            SseEvent::default().data(serde_json::to_string(&chunk).unwrap())
+                        );
+                    }
+                    TurnEvent::ReasoningDelta { delta } => {
+                        last_reasoning = Some(delta.clone());
+                        // Forward reasoning as content for OpenAI compatibility.
+                        let chunk = ChatChunk {
+                            id: chunk_id.clone(),
+                            object: "chat.completion.chunk".to_string(),
+                            created: chrono::Utc::now().timestamp(),
+                            model: model_str.clone(),
+                            choices: vec![ChatChunkChoice {
+                                index: 0,
+                                delta: ChatChunkDelta {
+                                    role: None,
+                                    content: Some(delta),
+                                },
+                                finish_reason: None,
+                            }],
+                        };
+                        yield Ok(
+                            SseEvent::default().data(serde_json::to_string(&chunk).unwrap())
+                        );
+                    }
+                    TurnEvent::ReasoningDelta { delta } => {
+                        // Forward reasoning as content for OpenAI compatibility.
                         let chunk = ChatChunk {
                             id: chunk_id.clone(),
                             object: "chat.completion.chunk".to_string(),
@@ -455,7 +506,7 @@ async fn chat_completions(
         sse.into_response()
     } else {
         // === Non-streaming ===
-        let mut session = luwu_core::SessionData::new(model);
+        let mut session = luwu_core::SessionData::new(model.clone());
 
         for msg in &req.messages {
             if msg.role == "user" {
@@ -471,7 +522,7 @@ async fn chat_completions(
                     id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
                     object: "chat.completion".to_string(),
                     created: chrono::Utc::now().timestamp(),
-                    model: model.to_string(),
+                    model: model.clone(),
                     choices: vec![ChatChoice {
                         index: 0,
                         message: ChatResponseMessage {
@@ -505,7 +556,7 @@ async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> axum::response::Response {
-    let resolved = match state.config.resolve(None) {
+    let resolved = match state.config.resolve(req.provider.as_deref()) {
         Ok(r) => r,
         Err(e) => {
             return (
@@ -517,7 +568,11 @@ async fn create_session(
     };
 
     let model = req.model.unwrap_or(resolved.model);
-    let session_ref = state.sessions.create(&model).await;
+    let session_ref = if let Some(provider) = &req.provider {
+        state.sessions.create_with_provider(&model, provider).await
+    } else {
+        state.sessions.create(&model).await
+    };
 
     Json(CreateSessionResponse {
         id: session_ref.id,
@@ -567,8 +622,16 @@ async fn agent_chat(
     Path(id): Path<String>,
     Json(req): Json<AgentChatRequest>,
 ) -> axum::response::Response {
-    // Resolve provider.
-    let resolved = match state.config.resolve(None) {
+    // Get session first to determine provider.
+    let session = match state.sessions.get(&id).await {
+        Some(s) => s,
+        None => {
+            return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
+        }
+    };
+
+    // Resolve provider — use session's provider if set, otherwise default.
+    let resolved = match state.config.resolve(session.data.provider.as_deref()) {
         Ok(r) => r,
         Err(e) => {
             return (
@@ -576,14 +639,6 @@ async fn agent_chat(
                 e.to_string(),
             )
                 .into_response();
-        }
-    };
-
-    // Get session.
-    let session = match state.sessions.get(&id).await {
-        Some(s) => s,
-        None => {
-            return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
         }
     };
 
@@ -634,6 +689,7 @@ async fn agent_chat(
     let mut writer_handle: Option<tokio::task::JoinHandle<()>> = None;
 
     // Start streaming.
+    let user_msg_for_session = req.message.clone();
     let event_rx = engine
         .run_stream(session_id, model, messages, req.message, Some(cancel_token))
         .await;
@@ -655,6 +711,20 @@ async fn agent_chat(
                         _assistant_text = assistant_text.clone();
                         // Feed precise usage from LLM API into cycle.
                         cycle.add_tokens(usage.total_tokens as usize);
+
+                        // Persist messages to session for multi-turn.
+                        let sessions_c = sessions.clone();
+                        let id_c = id_clone.clone();
+                        let user_msg = user_msg_for_session.clone();
+                        let asst_text = assistant_text.clone();
+                        tokio::spawn(async move {
+                            let mut msgs = vec![luwu_core::Message::user(&user_msg)];
+                            if !asst_text.is_empty() {
+                                msgs.push(luwu_core::Message::assistant(&asst_text));
+                            }
+                            sessions_c.append_messages(&id_c, msgs).await;
+                        });
+
                         break;
                     }
                     TurnEvent::Cancelled | TurnEvent::Error { .. } => break,

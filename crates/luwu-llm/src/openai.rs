@@ -159,6 +159,15 @@ async fn consume_stream(
                     .await;
             }
 
+            // Reasoning/thinking content (GLM-4.7, DeepSeek, MiniMax).
+            if let Some(reasoning) = &delta.reasoning_content
+                && !reasoning.is_empty()
+            {
+                let _ = tx
+                    .send(Ok(LlmEvent::ReasoningDelta(reasoning.clone())))
+                    .await;
+            }
+
             // Tool call deltas.
             if let Some(tool_calls) = delta.tool_calls {
                 for tc in tool_calls {
@@ -401,6 +410,7 @@ struct Choice {
 #[derive(Debug, Deserialize)]
 struct Delta {
     content: Option<String>,
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<ToolCallDelta>>,
 }
 

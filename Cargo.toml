@@ -4,7 +4,7 @@ members = [
     "crates/luwu-core",
     "crates/luwu-llm",
     "crates/luwu-tools",
-    "crates/luwu-server",
+    "crates/luwu-server", "crates/luwu-memory",
 ]
 
 [workspace.package]

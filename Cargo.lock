@@ -1836,6 +1836,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "luwu-memory"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "luwu-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "luwu-server"
 version = "0.1.0"
 dependencies = [
@@ -1846,7 +1858,9 @@ dependencies = [
  "futures",
  "luwu-core",
  "luwu-llm",
+ "luwu-memory",
  "luwu-tools",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

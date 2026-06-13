@@ -31,6 +31,8 @@ pub struct SessionData {
     pub title: Option<String>,
     /// The model used for this session.
     pub model: String,
+    /// The provider name for this session (uses default if None).
+    pub provider: Option<String>,
 }
 
 impl SessionData {
@@ -44,7 +46,15 @@ impl SessionData {
             messages: Vec::new(),
             title: None,
             model: model.into(),
+            provider: None,
         }
+    }
+
+    /// Create a new session with a specific provider.
+    pub fn with_provider(model: impl Into<String>, provider: impl Into<String>) -> Self {
+        let mut s = Self::new(model);
+        s.provider = Some(provider.into());
+        s
     }
 
     /// Add a message to the session.
