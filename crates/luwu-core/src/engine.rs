@@ -22,6 +22,7 @@ use crate::llm::{LlmEvent, LlmProvider, LlmRequest};
 use crate::message::{ContentPart, Message};
 use crate::session::SessionData;
 use crate::tool_registry::ToolRegistry;
+use crate::prompt::system_prompt_with_tools;
 
 // ---------------------------------------------------------------------------
 // Turn result
@@ -324,6 +325,7 @@ impl TurnEngine {
         let events = self.events.clone();
         let working_dir = self.working_dir.clone();
         let max_iterations = self.max_iterations;
+        let system_prompt = system_prompt_with_tools(&tools.tool_names());
 
         tokio::spawn(async move {
             if let Some(cancel) = &cancel {
@@ -372,7 +374,7 @@ impl TurnEngine {
                     model: model.clone(),
                     messages: all_messages.clone(),
                     tools: tools.definitions(),
-                    system_prompt: None,
+                    system_prompt: Some(system_prompt.clone()),
                     temperature: None,
                     max_tokens: None,
                     stop_sequences: Vec::new(),
@@ -590,7 +592,7 @@ impl TurnEngine {
             model: session.model.clone(),
             messages: session.messages.clone(),
             tools: self.tools.definitions(),
-            system_prompt: None,
+            system_prompt: Some(system_prompt_with_tools(&self.tools.tool_names())),
             temperature: None,
             max_tokens: None,
             stop_sequences: Vec::new(),

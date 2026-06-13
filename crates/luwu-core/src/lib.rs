@@ -25,6 +25,7 @@ pub mod session_manager;
 pub mod storage;
 pub mod tool;
 pub mod tool_registry;
+pub mod prompt;
 
 // Re-export the core types for convenience.
 pub use engine::{CancelToken, TurnEngine, TurnResult};
@@ -37,3 +38,4 @@ pub use session_manager::{ManagedSession, SessionManager, SessionSummary};
 pub use storage::Storage;
 pub use tool::{Tool, ToolContext, ToolOutput};
 pub use tool_registry::ToolRegistry;
+pub use prompt::{default_system_prompt, system_prompt_with_tools};
