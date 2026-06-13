@@ -306,6 +306,7 @@ impl TurnEngine {
     /// text deltas, tool calls, tool results, and a final `Done` event.
     ///
     /// Optionally accepts a `CancelToken` for user-initiated cancellation.
+    #[tracing::instrument(skip(self))]
     pub async fn run_stream(
         &self,
         session_id: crate::event::SessionId,
@@ -640,6 +641,7 @@ impl TurnEngine {
     }
 
     /// Call the LLM and collect the full response (all content parts + usage).
+    #[tracing::instrument(skip(self))]
     async fn call_llm(
         &self,
         request: LlmRequest,

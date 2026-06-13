@@ -4,11 +4,27 @@ Phased plan. Each phase is independently shippable — the project is better aft
 
 ## Done
 
-(none yet)
+### Phase 1 — Runtime Safety Net (P0) — `ae21d5d`
+Graceful shutdown, LLM client timeouts (120s/10s), TOCTOU atomic try_set_running, silent .ok() → warn! logging.
+
+### Phase 2 — Error Handling Overhaul (P1) — `740d576`
+Per-crate thiserror enums (LlmError/ToolError/ApiError), API response body truncation (500 chars), .unwrap() → .expect() cleanup, error sanitization in providers.
+
+### Phase 3 — Retry & Resilience (P1) — `f02524f`
+Shared reqwest::Client in AppState (connection pool), hand-rolled exponential backoff retry (429/5xx, 3 attempts, jitter), SSE 30s liveness timeout, JoinSet task tracking with abort on shutdown.
+
+### Phase 4 — Concurrency & I/O (P1) — `42f7faa`
+Sync std::fs → tokio::fs in session_manager, SQLite ops → spawn_blocking in search_index, RunningGuard RAII for is_running reset, config field validation (api_key/URL/temperature/max_tokens).
+
+### Phase 5 — Architecture Split (P2) — `bf1249f`
+1400-line api.rs god module → types.rs (153 lines) + app.rs (93 lines) + handlers/mod.rs. Storage dead trait removed.
+
+### Phase 6 — Cleanup (P3) — (this commit)
+Storage trait deleted, #[tracing::instrument] added to 5 key async functions (run_stream, call_llm, chat_completions, agent_chat, send_with_retry), re-review completed (C+ → B+).
 
 ## In Progress
 
-(none yet)
+(none)
 
 ## Next
 

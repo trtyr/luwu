@@ -48,6 +48,7 @@ fn is_retryable_status(status: u16) -> bool {
 ///
 /// The `RequestBuilder` must be cloneable (i.e., its body must be reusable).
 /// This is the case for all JSON-bodied LLM API requests.
+#[tracing::instrument(skip(request), fields(attempt))]
 pub async fn send_with_retry(request: &RequestBuilder) -> Result<Response, LlmError> {
     let mut attempt = 0;
 

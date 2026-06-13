@@ -93,6 +93,7 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsRespo
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::collapsible_if)]
+#[tracing::instrument(skip(state))]
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatRequest>,
@@ -427,6 +428,7 @@ pub async fn delete_session(
 // Handlers — Agent Chat (full event stream with tool visibility)
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(state))]
 pub async fn agent_chat(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
