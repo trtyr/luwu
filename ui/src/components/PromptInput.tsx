@@ -85,12 +85,26 @@ export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInpu
     ? (phase === 'thinking' ? 'thinking…' : 'busy…')
     : 'send a message (↑↓ history, / for commands)';
 
+  // Claude Code: top + bottom border only (no left/right), round style
+  const borderColor = phase === 'thinking' || phase === 'streaming'
+    ? theme.claude
+    : theme.promptBorder;
+
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Box borderStyle="round" borderColor={theme.promptBorder} flexDirection="column">
-        {isVisible && <SuggestionList suggestions={suggestions} selectedIndex={selectedIndex} />}
-        <Box>
-          <Text color={disabled ? theme.subtle : theme.suggestion} bold>{'> '}</Text>
+      {isVisible && <SuggestionList suggestions={suggestions} selectedIndex={selectedIndex} />}
+      <Box
+        borderStyle="round"
+        borderColor={borderColor}
+        borderLeft={false}
+        borderRight={false}
+        borderBottom
+        width="100%"
+        flexDirection="row"
+        alignItems="flex-start"
+      >
+        <Text color={disabled ? theme.subtle : theme.suggestion} bold>{'> '}</Text>
+        <Box flexGrow={1} flexShrink={1}>
           {value.length > 0 ? (
             <Text>
               <Text color={value.startsWith('/') ? theme.warning : theme.text}>{value}</Text>
