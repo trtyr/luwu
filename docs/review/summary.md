@@ -1,0 +1,74 @@
+# Project Review Summary
+
+**Project:** luwu (陆吾)
+**Date:** 2025-07-14
+**Stack:** Rust (edition 2024) / axum 0.8 / tokio
+
+## Quantitative Score (fuck-u-code)
+
+| Dimension | Score | Weight |
+| -------------- | ---------- | ------ |
+| **Overall** | **85/100** | — |
+| Complexity (cyclomatic) | 89/100 | 32% |
+| Duplication | 98/100 | 20% |
+| Size | 97/100 | 18% |
+| Structure | 96/100 | 12% |
+| **Error Handling** | **55/100** | 8% |
+| Documentation | 79/100 | 5% |
+| Naming | 100/100 | 5% |
+
+## Qualitative Assessment (Scout Analysis)
+
+| Dimension | Grade | Key Finding |
+| ------------------ | --------- | --------------------------------------------- |
+| Architecture | **B+** | Microkernel + traits excellent; `api.rs` is a 1380-line god module |
+| Runtime Health | **C-** | No graceful shutdown (F), no retry (F), no LLM timeouts (D) |
+| Network Resilience | **D** | No reconnection (F), no timeout on LLM calls (F), no error classification (F) |
+
+## Overall Grade: C+
+
+Solid architecture and code quality held back by missing production-readiness infrastructure: error handling, timeouts, retry logic, and graceful shutdown.
+
+## Top 3 Strengths
+
+1. **Microkernel design executed correctly** — `luwu-core` has zero crate deps, four clean trait boundaries, proper DI via `Arc<dyn Trait>`. Adding a provider or tool is a one-file job.
+2. **Excellent code metrics** — naming 100/100, duplication 98/100, complexity 89/100. The Rust code is clean, idiomatic, and well-structured at the module level.
+3. **Sophisticated memory system** — Four-layer memory with SQLite FTS5 search, Observer/Reflector/Dropper workers, deterministic compaction without LLM cost. Well-designed and thoughtfully layered.
+
+## Top 3 Areas to Improve
+
+1. **Error handling is systemic failure** (55/100 avg, multiple files at 0-4/100) — 80-100% of `Result` values silently swallowed via `.ok()` / `let _ =` in `api.rs`, `engine.rs`, `openai.rs`, `anthropic.rs`, `web_fetch.rs`, `edit.rs`. Failures become invisible.
+2. **No graceful shutdown** (`main.rs:101-102`) — `axum::serve().await.unwrap()` with no signal handling. Every Ctrl-C, kill, or deploy kills in-flight SSE streams, LLM API calls, and memory workers mid-operation. Sessions recover on restart (good) but are locked within process lifetime.
+3. **No timeout/retry on LLM calls** (`openai.rs:49`, `anthropic.rs:48`) — bare `Client::new()` with no `.timeout()`. A hanging LLM endpoint blocks the agent loop indefinitely. No retry on 429/5xx. One transient failure terminates the entire turn.
+
+## Quick Wins (high impact, low effort)
+
+1. **Add `reqwest::Client::builder().timeout(120s).connect_timeout(10s)`** to LLM providers — one line per provider, prevents indefinite hangs. (P0, trivial)
+2. **Add graceful shutdown signal handler** — `axum::serve(...).with_graceful_shutdown(shutdown_signal())`. ~20 lines. (P0, small)
+3. **Replace `.ok()` with `warn!` logging** in memory workers (`api.rs:774,800,858`) — surfaces hidden failures. (P1, trivial)
+4. **Fix TOCTOU race** in `agent_chat` — atomic check-and-set for `is_running`. (P1, small)
+
+## Critical Files (AI review targets)
+
+| File | 糟糕指数 | Worst Issue |
+| ---- | ------ | ------------ |
+| `crates/luwu-server/src/api.rs` | 30.8 | Error handling 3.1/100 (81.6% ignored), `agent_chat` 312 lines |
+| `crates/luwu-core/src/engine.rs` | 30.7 | `run_stream` 319 lines CC=34, 94.7% errors ignored |
+| `crates/luwu-llm/src/openai.rs` | 28.6 | Error handling 1.2/100 (100% ignored), no client timeout |
+| `crates/luwu-llm/src/anthropic.rs` | 24.2 | `consume_stream` CC=27 143 lines, 88.9% errors ignored |
+| `crates/luwu-tools/src/web_fetch.rs` | 20.9 | Error handling 4.3/100, `strip_html_tags` CC=19 |
+| `crates/luwu-tools/src/edit.rs` | 19.7 | Error handling 0/100 (100% ignored), 8-param function |
+
+## Systemic Issues (patterns, not one-offs)
+
+1. **Error swallowing is architectural** — every crate has the same pattern: `let _ = result.ok()` or `.unwrap()`. Not a few missed spots — it's the default approach. Fixing requires introducing per-crate error enums and replacing ~100+ silent drops with `?` propagation + `tracing::warn!`.
+
+2. **`api.rs` god module** — 1380 lines, 6 responsibilities (routing, types, orchestration, memory workers, cycle management, raw HTTP). Every architectural weakness traces back to this file. Splitting it into `handlers.rs` + `types.rs` + worker extraction to `luwu-memory` would fix multiple issues at once.
+
+3. **Workers bypass LlmProvider trait** — four memory worker functions in `api.rs` construct raw `reqwest::Client` and hand-roll HTTP POST to the LLM API, duplicating the pattern 4× with hardcoded model `"MiniMax-M3"`. The `LlmProvider` trait exists precisely to avoid this.
+
+4. **No connection reuse** — `Client::new()` created per request in providers, per call in workers, per fetch in web_fetch. No shared client, no connection pool, no TLS session resumption across requests.
+
+---
+
+*Generated by /review on 2025-07-14.*
