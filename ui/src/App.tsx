@@ -201,6 +201,7 @@ export function App() {
 
   return (
     <Box flexDirection="column">
+      <Welcome />
       <MessageList messages={messages} />
 
       <Spinner phase={phase} verb={spinnerVerbRef.current} />
