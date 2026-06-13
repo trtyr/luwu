@@ -42,11 +42,27 @@ async fn main() {
     println!("\x1b[2mconfig:   {}\x1b[0m", config::config_path().display());
     println!();
 
-    // Discover skills.
+    // Set up luwu home directory.
     let luwu_home = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".luwu");
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Initialize session manager with file persistence.
+    let sessions_dir = luwu_home.join("sessions");
+    let sessions = match SessionManager::with_persistence(&sessions_dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Failed to initialize sessions directory {}: {e}", sessions_dir.display());
+            std::process::exit(1);
+        }
+    };
+
+    // Recover persisted sessions from disk.
+    let recovered = sessions.load_from_disk().await;
+    println!("\x1b[2msessions: {} recovered\x1b[0m", recovered);
+
+    // Discover skills.
     let skills = luwu_core::SkillRegistry::discover(&luwu_home, &working_dir)
         .unwrap_or_else(|e| {
             tracing::warn!("Skill discovery failed: {e}");
@@ -57,7 +73,7 @@ async fn main() {
     // Build app state.
     let state = AppState {
         config,
-        sessions: SessionManager::new(),
+        sessions,
         working_dir: working_dir.clone(),
         skills,
     };
