@@ -112,10 +112,7 @@ fn parse_single_event(raw: &str) -> Option<SseEvent> {
         return None;
     }
 
-    Some(SseEvent {
-        data,
-        event_type,
-    })
+    Some(SseEvent { data, event_type })
 }
 
 #[cfg(test)]

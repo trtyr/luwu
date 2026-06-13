@@ -75,16 +75,9 @@ pub struct ConsolidationResult {
 }
 
 /// Checks memory files for consolidation eligibility.
+#[derive(Default)]
 pub struct ConsolidationChecker {
     config: ConsolidationConfig,
-}
-
-impl Default for ConsolidationChecker {
-    fn default() -> Self {
-        Self {
-            config: ConsolidationConfig::default(),
-        }
-    }
 }
 
 impl ConsolidationChecker {

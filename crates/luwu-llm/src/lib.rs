@@ -13,7 +13,7 @@
 //! The shared [`sse`] module handles parsing.
 
 pub mod anthropic;
-pub mod openai;
-mod sse;
 pub mod error;
+pub mod openai;
 pub mod retry;
+mod sse;

@@ -4,7 +4,7 @@
 //! with mdka as fallback for HTML → markdown conversion.
 
 use async_trait::async_trait;
-use kawat::{bare_extraction, ExtractorOptions};
+use kawat::{ExtractorOptions, bare_extraction};
 use luwu_core::{LuwuError, Result, Tool, ToolContext, ToolOutput};
 use serde_json::Value;
 use std::time::Duration;
@@ -107,9 +107,7 @@ impl Tool for WebFetchTool {
         let max_chars = input["max_chars"]
             .as_u64()
             .unwrap_or(DEFAULT_MAX_CHARS as u64) as usize;
-        let timeout_ms = input["timeout_ms"]
-            .as_u64()
-            .unwrap_or(DEFAULT_TIMEOUT_MS);
+        let timeout_ms = input["timeout_ms"].as_u64().unwrap_or(DEFAULT_TIMEOUT_MS);
 
         // Build the HTTP client.
         let client = reqwest::Client::builder()
@@ -191,7 +189,9 @@ fn extract_content(html: &str, url: &str, format: &str, max_chars: usize) -> Str
     match bare_extraction(html, &options) {
         Ok(doc) => {
             // Build metadata header from Document.
-            let title = doc.metadata.title
+            let title = doc
+                .metadata
+                .title
                 .clone()
                 .unwrap_or_else(|| extract_title(html));
 
@@ -251,11 +251,11 @@ fn extract_content(html: &str, url: &str, format: &str, max_chars: usize) -> Str
 /// Extract <title> from HTML.
 fn extract_title(html: &str) -> String {
     let lower = html.to_lowercase();
-    if let Some(start) = lower.find("<title>") {
-        if let Some(end) = lower.find("</title>") {
-            let content = &html[start + 7..end];
-            return content.trim().to_string();
-        }
+    if let Some(start) = lower.find("<title>")
+        && let Some(end) = lower.find("</title>")
+    {
+        let content = &html[start + 7..end];
+        return content.trim().to_string();
     }
     "Untitled".to_string()
 }

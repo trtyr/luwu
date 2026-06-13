@@ -66,8 +66,12 @@ impl std::fmt::Display for TurnId {
 #[derive(Debug, Clone)]
 pub enum Event {
     // -- Session lifecycle --
-    SessionCreated { session_id: SessionId },
-    SessionClosed { session_id: SessionId },
+    SessionCreated {
+        session_id: SessionId,
+    },
+    SessionClosed {
+        session_id: SessionId,
+    },
 
     // -- Turn lifecycle --
     TurnStarted {
@@ -126,15 +130,11 @@ pub enum Event {
 pub enum TurnEvent {
     /// A text delta from the LLM.
     #[serde(rename = "text_delta")]
-    TextDelta {
-        delta: String,
-    },
+    TextDelta { delta: String },
 
     /// Reasoning/thinking content from the model (GLM, DeepSeek, MiniMax).
     #[serde(rename = "reasoning_delta")]
-    ReasoningDelta {
-        delta: String,
-    },
+    ReasoningDelta { delta: String },
 
     /// The LLM is requesting a tool call.
     #[serde(rename = "tool_call")]
@@ -146,10 +146,7 @@ pub enum TurnEvent {
 
     /// A tool execution has started.
     #[serde(rename = "tool_started")]
-    ToolStarted {
-        call_id: String,
-        tool_name: String,
-    },
+    ToolStarted { call_id: String, tool_name: String },
 
     /// A tool execution has finished.
     #[serde(rename = "tool_completed")]
@@ -162,10 +159,7 @@ pub enum TurnEvent {
 
     /// A single agentic iteration has completed (LLM call + optional tool calls).
     #[serde(rename = "iteration_end")]
-    IterationEnd {
-        iteration: u32,
-        tool_calls: u32,
-    },
+    IterationEnd { iteration: u32, tool_calls: u32 },
 
     /// The entire turn is done.
     #[serde(rename = "done")]
@@ -182,9 +176,7 @@ pub enum TurnEvent {
 
     /// An error occurred.
     #[serde(rename = "error")]
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 // ---- Event bus ----

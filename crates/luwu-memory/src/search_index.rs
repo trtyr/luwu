@@ -4,7 +4,7 @@
 //! SQLite FTS5 is used as a mirror index — the source of truth remains
 //! the Markdown/JSONL files. The index is rebuilt on demand if missing.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::debug;
@@ -167,9 +167,12 @@ mod tests {
     fn test_index_and_search() {
         let idx = temp_index();
 
-        idx.index_entry("global", "User prefers pnpm over npm", "").unwrap();
-        idx.index_entry("project", "Auth uses JWT tokens with RS256", "").unwrap();
-        idx.index_entry("correction", "Don't use Box, use Arc for dyn traits", "").unwrap();
+        idx.index_entry("global", "User prefers pnpm over npm", "")
+            .unwrap();
+        idx.index_entry("project", "Auth uses JWT tokens with RS256", "")
+            .unwrap();
+        idx.index_entry("correction", "Don't use Box, use Arc for dyn traits", "")
+            .unwrap();
 
         let results = idx.search("pnpm", 10).unwrap();
         assert!(!results.is_empty());
@@ -181,9 +184,12 @@ mod tests {
     fn test_clear_session() {
         let idx = temp_index();
 
-        idx.index_entry("notes", "entry from session A", "sess-a").unwrap();
-        idx.index_entry("notes", "entry from session B", "sess-b").unwrap();
-        idx.index_entry("notes", "another from A", "sess-a").unwrap();
+        idx.index_entry("notes", "entry from session A", "sess-a")
+            .unwrap();
+        idx.index_entry("notes", "entry from session B", "sess-b")
+            .unwrap();
+        idx.index_entry("notes", "another from A", "sess-a")
+            .unwrap();
 
         idx.clear_session("sess-a").unwrap();
 
@@ -196,8 +202,10 @@ mod tests {
     fn test_chinese_search() {
         let idx = temp_index();
 
-        idx.index_entry("global", "用户偏好使用 pnpm 而不是 npm", "").unwrap();
-        idx.index_entry("project", "认证模块使用 JWT 和 RS256 签名", "").unwrap();
+        idx.index_entry("global", "用户偏好使用 pnpm 而不是 npm", "")
+            .unwrap();
+        idx.index_entry("project", "认证模块使用 JWT 和 RS256 签名", "")
+            .unwrap();
 
         let results = idx.search("用户", 10).unwrap();
         assert!(!results.is_empty());

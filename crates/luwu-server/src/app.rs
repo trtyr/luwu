@@ -58,7 +58,10 @@ pub fn router(state: AppState) -> Router {
         )
         // Session management.
         .route("/v1/sessions", axum::routing::get(handlers::list_sessions))
-        .route("/v1/sessions", axum::routing::post(handlers::create_session))
+        .route(
+            "/v1/sessions",
+            axum::routing::post(handlers::create_session),
+        )
         .route(
             "/v1/sessions/{id}",
             axum::routing::get(handlers::get_session).delete(handlers::delete_session),

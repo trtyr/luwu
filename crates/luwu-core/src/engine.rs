@@ -20,9 +20,9 @@ use crate::error::{LuwuError, Result};
 use crate::event::{Event, EventBus, TurnEvent, TurnId};
 use crate::llm::{LlmEvent, LlmProvider, LlmRequest};
 use crate::message::{ContentPart, Message};
+use crate::prompt::system_prompt_with_tools_and_skills;
 use crate::session::SessionData;
 use crate::tool_registry::ToolRegistry;
-use crate::prompt::system_prompt_with_tools_and_skills;
 
 // ---------------------------------------------------------------------------
 // Turn result
@@ -126,11 +126,7 @@ impl TurnEngine {
 
     /// Run a single turn: send the user message through the full agent loop.
     /// Returns the complete result (non-streaming).
-    pub async fn run(
-        &self,
-        session: &mut SessionData,
-        user_message: String,
-    ) -> Result<TurnResult> {
+    pub async fn run(&self, session: &mut SessionData, user_message: String) -> Result<TurnResult> {
         let turn_id = TurnId::new();
         let session_id = session.id.clone();
 
@@ -163,7 +159,10 @@ impl TurnEngine {
         loop {
             iteration += 1;
             if iteration > self.max_iterations {
-                warn!(iterations = iteration, "Hit max iteration limit, stopping turn");
+                warn!(
+                    iterations = iteration,
+                    "Hit max iteration limit, stopping turn"
+                );
                 self.events.publish(Event::Error {
                     session_id: session_id.clone(),
                     turn_id: Some(turn_id.clone()),
@@ -269,8 +268,7 @@ impl TurnEngine {
                     });
 
                     // Add tool result to session.
-                    let result_msg =
-                        Message::tool_result(call_id, output.content, output.is_error);
+                    let result_msg = Message::tool_result(call_id, output.content, output.is_error);
                     session.push_message(result_msg.clone());
                     result.messages.push(result_msg);
                 }
@@ -333,11 +331,11 @@ impl TurnEngine {
         let system_prompt = system_prompt_with_tools_and_skills(&tools.tool_names(), &skills);
 
         tokio::spawn(async move {
-            if let Some(cancel) = &cancel {
-                if cancel.is_cancelled() {
-                    let _ = tx.send(TurnEvent::Cancelled).await;
-                    return;
-                }
+            if let Some(cancel) = &cancel
+                && cancel.is_cancelled()
+            {
+                let _ = tx.send(TurnEvent::Cancelled).await;
+                return;
             }
 
             let turn_id = TurnId::new();
@@ -358,18 +356,20 @@ impl TurnEngine {
 
             loop {
                 // Check cancellation.
-                if let Some(cancel) = &cancel {
-                    if cancel.is_cancelled() {
-                        let _ = tx.send(TurnEvent::Cancelled).await;
-                        break;
-                    }
+                if let Some(cancel) = &cancel
+                    && cancel.is_cancelled()
+                {
+                    let _ = tx.send(TurnEvent::Cancelled).await;
+                    break;
                 }
 
                 iteration += 1;
                 if iteration > max_iterations {
-                    let _ = tx.send(TurnEvent::Error {
-                        message: format!("Exceeded max iterations ({})", max_iterations),
-                    }).await;
+                    let _ = tx
+                        .send(TurnEvent::Error {
+                            message: format!("Exceeded max iterations ({})", max_iterations),
+                        })
+                        .await;
                     break;
                 }
 
@@ -389,9 +389,11 @@ impl TurnEngine {
                 let mut stream_rx = match provider.stream(request).await {
                     Ok(rx) => rx,
                     Err(e) => {
-                        let _ = tx.send(TurnEvent::Error {
-                            message: format!("LLM stream failed: {}", e),
-                        }).await;
+                        let _ = tx
+                            .send(TurnEvent::Error {
+                                message: format!("LLM stream failed: {}", e),
+                            })
+                            .await;
                         break;
                     }
                 };
@@ -404,19 +406,21 @@ impl TurnEngine {
 
                 while let Some(event_result) = stream_rx.recv().await {
                     // Check cancellation during streaming.
-                    if let Some(cancel) = &cancel {
-                        if cancel.is_cancelled() {
-                            let _ = tx.send(TurnEvent::Cancelled).await;
-                            return;
-                        }
+                    if let Some(cancel) = &cancel
+                        && cancel.is_cancelled()
+                    {
+                        let _ = tx.send(TurnEvent::Cancelled).await;
+                        return;
                     }
 
                     let event = match event_result {
                         Ok(e) => e,
                         Err(e) => {
-                            let _ = tx.send(TurnEvent::Error {
-                                message: e.to_string(),
-                            }).await;
+                            let _ = tx
+                                .send(TurnEvent::Error {
+                                    message: e.to_string(),
+                                })
+                                .await;
                             return;
                         }
                     };
@@ -424,15 +428,19 @@ impl TurnEngine {
                     match event {
                         LlmEvent::TextDelta(delta) => {
                             // Emit the delta immediately!
-                            let _ = tx.send(TurnEvent::TextDelta {
-                                delta: delta.clone(),
-                            }).await;
+                            let _ = tx
+                                .send(TurnEvent::TextDelta {
+                                    delta: delta.clone(),
+                                })
+                                .await;
                             current_text.push_str(&delta);
                         }
                         LlmEvent::ReasoningDelta(reasoning) => {
-                            let _ = tx.send(TurnEvent::ReasoningDelta {
-                                delta: reasoning.clone(),
-                            }).await;
+                            let _ = tx
+                                .send(TurnEvent::ReasoningDelta {
+                                    delta: reasoning.clone(),
+                                })
+                                .await;
                             reasoning_text.push_str(&reasoning);
                         }
 
@@ -442,11 +450,14 @@ impl TurnEngine {
                                     text: std::mem::take(&mut current_text),
                                 });
                             }
-                            pending_tool_calls.insert(id.clone(), PendingToolCall {
-                                id: id.clone(),
-                                name: name.clone(),
-                                arguments: String::new(),
-                            });
+                            pending_tool_calls.insert(
+                                id.clone(),
+                                PendingToolCall {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    arguments: String::new(),
+                                },
+                            );
                         }
 
                         LlmEvent::ToolCallDelta { id, delta } => {
@@ -472,27 +483,29 @@ impl TurnEngine {
                 // Flush remaining text. If only reasoning was produced (no text content),
                 // emit it as a TextDelta so consumers always get text.
                 if current_text.is_empty() && !reasoning_text.is_empty() {
-                    let _ = tx.send(TurnEvent::TextDelta {
-                        delta: reasoning_text.clone(),
-                    }).await;
+                    let _ = tx
+                        .send(TurnEvent::TextDelta {
+                            delta: reasoning_text.clone(),
+                        })
+                        .await;
                     current_text = reasoning_text;
                 }
 
                 // Detect skill reference in assistant text and inject instructions.
-                if let Some(skill_name) = skills.detect_skill_reference(&current_text) {
-                    if let Some(skill) = skills.get(&skill_name) {
-                        tracing::info!("Skill activated: {}", skill_name);
-                        let inject = format!(
-                            "\n\n[Skill activated: {}]\n{}\n\nFollow these instructions for the current task.",
-                            skill.name, skill.instructions
-                        );
-                        all_messages.push(crate::message::Message {
-                            role: crate::message::Role::User,
-                            content: vec![crate::message::ContentPart::Text { text: inject }],
-                            name: None,
-                            tool_call_id: None,
-                        });
-                    }
+                if let Some(skill_name) = skills.detect_skill_reference(&current_text)
+                    && let Some(skill) = skills.get(&skill_name)
+                {
+                    tracing::info!("Skill activated: {}", skill_name);
+                    let inject = format!(
+                        "\n\n[Skill activated: {}]\n{}\n\nFollow these instructions for the current task.",
+                        skill.name, skill.instructions
+                    );
+                    all_messages.push(crate::message::Message {
+                        role: crate::message::Role::User,
+                        content: vec![crate::message::ContentPart::Text { text: inject }],
+                        name: None,
+                        tool_call_id: None,
+                    });
                 }
                 if !current_text.is_empty() {
                     content_parts.push(ContentPart::Text {
@@ -536,12 +549,14 @@ impl TurnEngine {
                         .join("");
                     assistant_text = full_text;
 
-                    let _ = tx.send(TurnEvent::Done {
-                        assistant_text: assistant_text.clone(),
-                        llm_calls,
-                        tool_calls: tool_calls_count,
-                        usage: total_usage.clone(),
-                    }).await;
+                    let _ = tx
+                        .send(TurnEvent::Done {
+                            assistant_text: assistant_text.clone(),
+                            llm_calls,
+                            tool_calls: tool_calls_count,
+                            usage: total_usage.clone(),
+                        })
+                        .await;
                     break;
                 }
 
@@ -549,16 +564,20 @@ impl TurnEngine {
                 for tc in &finalized_tool_calls {
                     let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(Value::Null);
 
-                    let _ = tx.send(TurnEvent::ToolCall {
-                        call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        arguments: args.clone(),
-                    }).await;
+                    let _ = tx
+                        .send(TurnEvent::ToolCall {
+                            call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            arguments: args.clone(),
+                        })
+                        .await;
 
-                    let _ = tx.send(TurnEvent::ToolStarted {
-                        call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                    }).await;
+                    let _ = tx
+                        .send(TurnEvent::ToolStarted {
+                            call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                        })
+                        .await;
 
                     events.publish(Event::ToolStarted {
                         session_id: session_id_clone.clone(),
@@ -583,12 +602,14 @@ impl TurnEngine {
                         },
                     };
 
-                    let _ = tx.send(TurnEvent::ToolCompleted {
-                        call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        output: output.content.clone(),
-                        is_error: output.is_error,
-                    }).await;
+                    let _ = tx
+                        .send(TurnEvent::ToolCompleted {
+                            call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            output: output.content.clone(),
+                            is_error: output.is_error,
+                        })
+                        .await;
 
                     events.publish(Event::ToolCompleted {
                         session_id: session_id_clone.clone(),
@@ -598,20 +619,19 @@ impl TurnEngine {
                     });
 
                     // Add tool result to messages.
-                    let result_msg = Message::tool_result(
-                        tc.id.clone(),
-                        output.content,
-                        output.is_error,
-                    );
+                    let result_msg =
+                        Message::tool_result(tc.id.clone(), output.content, output.is_error);
                     all_messages.push(result_msg);
                     tool_calls_count += 1;
                 }
 
                 // Emit iteration end.
-                let _ = tx.send(TurnEvent::IterationEnd {
-                    iteration,
-                    tool_calls: finalized_tool_calls.len() as u32,
-                }).await;
+                let _ = tx
+                    .send(TurnEvent::IterationEnd {
+                        iteration,
+                        tool_calls: finalized_tool_calls.len() as u32,
+                    })
+                    .await;
 
                 // Loop back — the next iteration will open a new LLM stream
                 // with the tool results appended to the message history.
@@ -633,7 +653,10 @@ impl TurnEngine {
             model: session.model.clone(),
             messages: session.messages.clone(),
             tools: self.tools.definitions(),
-            system_prompt: Some(system_prompt_with_tools_and_skills(&self.tools.tool_names(), &self.skills)),
+            system_prompt: Some(system_prompt_with_tools_and_skills(
+                &self.tools.tool_names(),
+                &self.skills,
+            )),
             temperature: None,
             max_tokens: None,
             stop_sequences: Vec::new(),
@@ -706,9 +729,7 @@ impl TurnEngine {
             current_text = reasoning_text;
         }
         if !current_text.is_empty() {
-            content_parts.push(ContentPart::Text {
-                text: current_text,
-            });
+            content_parts.push(ContentPart::Text { text: current_text });
         }
 
         // Add tool calls.

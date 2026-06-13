@@ -87,7 +87,10 @@ impl SkillRegistry {
             registry.scan_directory(&project_dir_skills)?;
         }
 
-        info!("Skill discovery complete: {} skills loaded", registry.skills.len());
+        info!(
+            "Skill discovery complete: {} skills loaded",
+            registry.skills.len()
+        );
         Ok(registry)
     }
 
@@ -131,10 +134,10 @@ impl SkillRegistry {
     fn load_skill(dir: &Path) -> Result<Skill> {
         let skill_file = dir.join("SKILL.md");
         let raw = std::fs::read_to_string(&skill_file).map_err(|e| {
-            LuwuError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Cannot read {}: {e}", skill_file.display()),
-            ))
+            LuwuError::Io(std::io::Error::other(format!(
+                "Cannot read {}: {e}",
+                skill_file.display()
+            )))
         })?;
 
         let (frontmatter, instructions) = Self::parse_skill_md(&raw)?;
@@ -144,9 +147,10 @@ impl SkillRegistry {
 
         // Validate description.
         if frontmatter.description.is_empty() {
-            return Err(LuwuError::Config(
-                format!("Skill '{}' has empty description — skills without description are not loaded", frontmatter.name),
-            ));
+            return Err(LuwuError::Config(format!(
+                "Skill '{}' has empty description — skills without description are not loaded",
+                frontmatter.name
+            )));
         }
         if frontmatter.description.len() > 1024 {
             warn!(
@@ -160,7 +164,10 @@ impl SkillRegistry {
             name: frontmatter.name,
             description: frontmatter.description,
             instructions,
-            base_path: dir.to_path_buf().canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+            base_path: dir
+                .to_path_buf()
+                .canonicalize()
+                .unwrap_or_else(|_| dir.to_path_buf()),
         })
     }
 
@@ -177,18 +184,15 @@ impl SkillRegistry {
 
         // Find closing ---.
         let rest = &content[3..];
-        let close_pos = rest
-            .find("\n---")
-            .ok_or_else(|| {
-                LuwuError::Config("SKILL.md frontmatter missing closing ---".to_string())
-            })?;
+        let close_pos = rest.find("\n---").ok_or_else(|| {
+            LuwuError::Config("SKILL.md frontmatter missing closing ---".to_string())
+        })?;
 
         let yaml_str = &rest[..close_pos];
         let body = rest[close_pos + 4..].trim().to_string();
 
-        let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml_str).map_err(|e| {
-            LuwuError::Config(format!("Invalid SKILL.md frontmatter: {e}"))
-        })?;
+        let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml_str)
+            .map_err(|e| LuwuError::Config(format!("Invalid SKILL.md frontmatter: {e}")))?;
 
         Ok((frontmatter, body))
     }
@@ -212,19 +216,22 @@ impl SkillRegistry {
                 "Skill name '{name}' cannot contain consecutive hyphens"
             )));
         }
-        if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
             return Err(LuwuError::Config(format!(
                 "Skill name '{name}' must only contain lowercase a-z, 0-9, and hyphens"
             )));
         }
 
         // Warn (not error) if name doesn't match directory name.
-        if let Some(dir_name) = dir.file_name().map(|n| n.to_string_lossy()) {
-            if dir_name != name {
-                warn!(
-                    "Skill name '{name}' doesn't match directory name '{dir_name}' (warning, still loaded)"
-                );
-            }
+        if let Some(dir_name) = dir.file_name().map(|n| n.to_string_lossy())
+            && dir_name != name
+        {
+            warn!(
+                "Skill name '{name}' doesn't match directory name '{dir_name}' (warning, still loaded)"
+            );
         }
 
         Ok(())
@@ -253,9 +260,7 @@ impl SkillRegistry {
 
     /// Look up a skill by name.
     pub fn get(&self, name: &str) -> Option<&Skill> {
-        self.index
-            .get(name)
-            .map(|&idx| &self.skills[idx])
+        self.index.get(name).map(|&idx| &self.skills[idx])
     }
 
     /// List all loaded skills.

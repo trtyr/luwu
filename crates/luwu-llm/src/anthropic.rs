@@ -12,13 +12,11 @@
 //!
 //! Claude Sonnet 4, Claude Opus 4, Claude Haiku 3.5, etc.
 
+use crate::error::LlmError;
 use async_trait::async_trait;
 use futures::StreamExt;
-use luwu_core::{
-    ContentPart, LlmEvent, LlmProvider, LlmRequest, LlmUsage, Message, Result, Role,
-};
+use luwu_core::{ContentPart, LlmEvent, LlmProvider, LlmRequest, LlmUsage, Message, Result, Role};
 use reqwest::Client;
-use crate::error::LlmError;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -57,7 +55,11 @@ impl AnthropicProvider {
     }
 
     /// Create a provider with an existing reqwest client (shared connection pool).
-    pub fn with_client(api_key: impl Into<String>, base_url: impl Into<String>, client: Client) -> Self {
+    pub fn with_client(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        client: Client,
+    ) -> Self {
         Self {
             client,
             api_key: api_key.into(),
@@ -115,31 +117,35 @@ impl LlmProvider for AnthropicProvider {
 // ---------------------------------------------------------------------------
 
 async fn consume_stream(
-    mut event_stream: std::pin::Pin<Box<dyn futures::Stream<Item = std::result::Result<sse::SseEvent, reqwest::Error>> + Send>>,
+    mut event_stream: std::pin::Pin<
+        Box<dyn futures::Stream<Item = std::result::Result<sse::SseEvent, reqwest::Error>> + Send>,
+    >,
     tx: tokio::sync::mpsc::Sender<Result<LlmEvent>>,
 ) {
     // Accumulate tool call arguments across content_block_delta events.
     let mut active_tool_calls: HashMap<String, PartialToolCall> = HashMap::new();
 
     loop {
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            event_stream.next(),
-        ).await {
-            Ok(Some(r)) => r,
-            Ok(None) => break, // stream ended normally
-            Err(_) => {
-                // LLM stalled mid-stream — 30s with no data
-                let _ = tx.send(Err(LlmError::Timeout.into())).await;
-                break;
-            }
-        };
+        let result =
+            match tokio::time::timeout(std::time::Duration::from_secs(30), event_stream.next())
+                .await
+            {
+                Ok(Some(r)) => r,
+                Ok(None) => break, // stream ended normally
+                Err(_) => {
+                    // LLM stalled mid-stream — 30s with no data
+                    let _ = tx.send(Err(LlmError::Timeout.into())).await;
+                    break;
+                }
+            };
 
         let sse_event = match result {
             Ok(e) => e,
             Err(e) => {
                 if let Err(send_err) = tx
-                    .send(Err(LlmError::Stream(format!("SSE stream error: {e}")).into()))
+                    .send(Err(
+                        LlmError::Stream(format!("SSE stream error: {e}")).into()
+                    ))
                     .await
                 {
                     tracing::warn!(%send_err, "Failed to send SSE error event");
@@ -198,9 +204,7 @@ async fn consume_stream(
                             arguments: String::new(),
                         },
                     );
-                    let _ = tx
-                        .send(Ok(LlmEvent::ToolCallBegin { id, name }))
-                        .await;
+                    let _ = tx.send(Ok(LlmEvent::ToolCallBegin { id, name })).await;
                 }
             }
 
@@ -275,7 +279,8 @@ async fn consume_stream(
 /// Intermediate accumulation state for a tool call.
 struct PartialToolCall {
     id: String,
-    #[allow(dead_code)] name: String,
+    #[allow(dead_code)]
+    name: String,
     arguments: String,
 }
 
@@ -311,11 +316,14 @@ fn build_request_body(req: &LlmRequest) -> Result<Value> {
 
     if !req.tools.is_empty() {
         body["tools"] = serde_json::json!(
-            req.tools.iter().map(|t| serde_json::json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.parameters,
-            })).collect::<Vec<_>>()
+            req.tools
+                .iter()
+                .map(|t| serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                }))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -421,7 +429,10 @@ enum ContentBlockContentType {
     #[serde(rename = "tool_use")]
     ToolUse { id: String, name: String },
     #[serde(rename = "text")]
-    Text { #[allow(dead_code)] text: String },
+    Text {
+        #[allow(dead_code)]
+        text: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]

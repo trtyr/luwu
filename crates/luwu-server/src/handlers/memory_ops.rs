@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
-use axum::Json;
 
 use luwu_memory::MemoryStore;
 
@@ -68,18 +68,12 @@ pub async fn search_history(
                     return Json(json).into_response();
                 }
                 Err(e) => {
-                    return (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        e.to_string(),
-                    )
+                    return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
                         .into_response();
                 }
             },
             Err(e) => {
-                return (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    e.to_string(),
-                )
+                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
                     .into_response();
             }
         }
@@ -94,10 +88,6 @@ pub async fn search_history(
             });
             Json(json).into_response()
         }
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            e.to_string(),
-        )
-            .into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

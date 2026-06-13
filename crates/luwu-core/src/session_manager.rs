@@ -95,7 +95,10 @@ impl SessionManager {
         let entries = match std::fs::read_dir(&self.sessions_dir) {
             Ok(e) => e,
             Err(err) => {
-                warn!("Cannot read sessions directory {}: {err}", self.sessions_dir.display());
+                warn!(
+                    "Cannot read sessions directory {}: {err}",
+                    self.sessions_dir.display()
+                );
                 return 0;
             }
         };
@@ -124,7 +127,10 @@ impl SessionManager {
             };
 
             let id = data.id.to_string();
-            debug!("Loaded session {id} from disk ({} messages)", data.messages.len());
+            debug!(
+                "Loaded session {id} from disk ({} messages)",
+                data.messages.len()
+            );
 
             let session = ManagedSession {
                 data,

@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum::Json;
 
 use luwu_core::SessionSummary;
 
@@ -23,11 +23,7 @@ pub async fn create_session(
     let resolved = match state.config.resolve(req.provider.as_deref()) {
         Ok(r) => r,
         Err(e) => {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                e.to_string(),
-            )
-                .into_response();
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
 

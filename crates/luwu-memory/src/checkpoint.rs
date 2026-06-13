@@ -121,10 +121,7 @@ impl Checkpoint {
                     }
                     content_lines.push(*line);
                 }
-                let content = content_lines
-                    .join("\n")
-                    .trim()
-                    .to_string();
+                let content = content_lines.join("\n").trim().to_string();
                 if !content.is_empty() {
                     *field = content;
                 }
@@ -160,7 +157,10 @@ mod tests {
 
         assert_eq!(parsed.current_intent, "修复 login 函数的 timeout bug");
         assert_eq!(parsed.next_action, "在 engine.rs:142 添加 timeout 参数");
-        assert_eq!(parsed.design_decisions, "选 OnceLock 而非 lazy_static — 无额外依赖");
+        assert_eq!(
+            parsed.design_decisions,
+            "选 OnceLock 而非 lazy_static — 无额外依赖"
+        );
         assert_eq!(parsed.notes, "用户提到下周要加 MCP 支持");
     }
 

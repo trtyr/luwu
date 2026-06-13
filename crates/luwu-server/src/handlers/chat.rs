@@ -3,15 +3,15 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::response::sse::{Event as SseEvent, Sse};
-use axum::response::IntoResponse;
 use axum::Json;
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::response::sse::{Event as SseEvent, Sse};
 
 use luwu_core::{EventBus, Message, TurnEngine, TurnEvent};
 use luwu_llm::openai::OpenAiProvider;
 
-use crate::app::{builtin_tool_registry, AppState};
+use crate::app::{AppState, builtin_tool_registry};
 use crate::types::*;
 
 #[allow(clippy::collapsible_if)]
@@ -23,11 +23,7 @@ pub async fn chat_completions(
     let resolved = match state.config.resolve(None) {
         Ok(r) => r,
         Err(e) => {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                e.to_string(),
-            )
-                .into_response();
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
 
@@ -51,11 +47,21 @@ pub async fn chat_completions(
     let should_stream = req.stream.unwrap_or(false);
 
     // Build engine.
-    let provider = OpenAiProvider::with_client(&resolved.api_key, &resolved.base_url, state.http_client.clone());
+    let provider = OpenAiProvider::with_client(
+        &resolved.api_key,
+        &resolved.base_url,
+        state.http_client.clone(),
+    );
     let tools = builtin_tool_registry();
     let events = EventBus::new(256);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let engine = TurnEngine::new(std::sync::Arc::new(provider), tools, state.skills.clone(), events, working_dir);
+    let engine = TurnEngine::new(
+        std::sync::Arc::new(provider),
+        tools,
+        state.skills.clone(),
+        events,
+        working_dir,
+    );
 
     // Convert request messages to core Messages.
     let mut messages: Vec<Message> = Vec::new();

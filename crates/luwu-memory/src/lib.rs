@@ -24,10 +24,16 @@ pub mod store;
 pub mod workers;
 
 pub use checkpoint::Checkpoint;
-pub use consolidation::{ConsolidationChecker, ConsolidationConfig, ConsolidationNeeded, ConsolidationResult, MemoryFileType, apply_consolidation, consolidation_prompt};
+pub use consolidation::{
+    ConsolidationChecker, ConsolidationConfig, ConsolidationNeeded, ConsolidationResult,
+    MemoryFileType, apply_consolidation, consolidation_prompt,
+};
 pub use correction::{CorrectionDetector, CorrectionPattern, CorrectionResult};
 pub use deterministic::{DeterministicSummary, FileChange, compile as compile_summary};
 pub use history::{HistoryEntry, HistoryLog, TokenEstimator};
 pub use search_index::{SearchIndex, SearchResult};
 pub use store::MemoryStore;
-pub use workers::{Observation, Priority, Reflection, WorkerThresholds, observer_prompt, reflector_prompt, dropper_prompt};
+pub use workers::{
+    Observation, Priority, Reflection, WorkerThresholds, dropper_prompt, observer_prompt,
+    reflector_prompt,
+};

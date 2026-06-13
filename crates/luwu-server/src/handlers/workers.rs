@@ -8,9 +8,8 @@ use std::sync::Arc;
 use luwu_core::message::{ContentPart, Role};
 use luwu_core::{LlmProvider, LlmRequest, Message};
 use luwu_memory::{
-    apply_consolidation, consolidation_prompt,
-    observer_prompt, reflector_prompt, ConsolidationNeeded, MemoryFileType,
-    MemoryStore, Observation, Priority, Reflection,
+    ConsolidationNeeded, MemoryFileType, MemoryStore, Observation, Priority, Reflection,
+    apply_consolidation, consolidation_prompt, observer_prompt, reflector_prompt,
 };
 
 /// Run the consolidation Writer — merges memory entries when files exceed threshold.
@@ -63,8 +62,14 @@ pub(crate) fn messages_to_transcript(messages: &[Message], max_chars: usize) -> 
                 ContentPart::ToolCall { name, .. } => {
                     out.push_str(&format!("{role}: [called tool: {name}]\n\n"));
                 }
-                ContentPart::ToolResult { content, is_error, .. } => {
-                    let prefix = if *is_error { "Tool Error" } else { "Tool Result" };
+                ContentPart::ToolResult {
+                    content, is_error, ..
+                } => {
+                    let prefix = if *is_error {
+                        "Tool Error"
+                    } else {
+                        "Tool Result"
+                    };
                     out.push_str(&format!("{prefix}: {content}\n\n"));
                 }
             }
@@ -116,10 +121,16 @@ pub(crate) async fn run_observer_worker(
                 Some("low") => Priority::Low,
                 _ => Priority::Medium,
             };
-            let category =
-                v.get("category").and_then(|c| c.as_str()).unwrap_or("event").to_string();
-            let content =
-                v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let category = v
+                .get("category")
+                .and_then(|c| c.as_str())
+                .unwrap_or("event")
+                .to_string();
+            let content = v
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
             if !content.is_empty() {
                 let obs = Observation::new(priority, category, content);
                 if let Err(e) = memory.append_observation(&obs) {
@@ -172,8 +183,11 @@ pub(crate) async fn run_reflector_worker(
             continue;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            let content =
-                v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let content = v
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
             let source_ids: Vec<String> = v
                 .get("source_ids")
                 .and_then(|s| s.as_array())

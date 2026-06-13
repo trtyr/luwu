@@ -5,9 +5,9 @@
 //! The file index is built once and kept alive across searches.
 
 use async_trait::async_trait;
+use fff_search::file_picker::{FilePicker, FilePickerOptions};
 use fff_search::grep::{GrepMode, GrepSearchOptions};
 use fff_search::shared::{SharedFilePicker, SharedFrecency};
-use fff_search::file_picker::{FilePicker, FilePickerOptions};
 use fff_search::{AiGrepConfig, FFFMode, QueryParser};
 use luwu_core::{Result, Tool, ToolContext, ToolOutput};
 use serde_json::Value;
@@ -226,7 +226,11 @@ impl Tool for GrepTool {
                 output_lines.push(format!("  │ {}", ctx_line));
             }
 
-            let def_marker = if gm.is_definition { " [definition]" } else { "" };
+            let def_marker = if gm.is_definition {
+                " [definition]"
+            } else {
+                ""
+            };
             output_lines.push(format!(
                 "{}:{}:{}  {}{}",
                 file_path, gm.line_number, gm.col, line_content, def_marker
@@ -253,7 +257,11 @@ impl Tool for GrepTool {
             count,
             if count > 1 { "es" } else { "" },
             result.files_with_matches,
-            if result.files_with_matches > 1 { "s" } else { "" },
+            if result.files_with_matches > 1 {
+                "s"
+            } else {
+                ""
+            },
             result.total_files_searched,
             output_lines.join("\n"),
             truncated

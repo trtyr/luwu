@@ -3,21 +3,19 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::response::sse::{Event as SseEvent, Sse};
-use axum::response::IntoResponse;
 use axum::Json;
+use axum::extract::{Path, State};
+use axum::response::IntoResponse;
+use axum::response::sse::{Event as SseEvent, Sse};
 
 use luwu_core::{
-    CycleAction, CycleState, EventBus, LlmProvider, RunningGuard,
-    TrySetRunningError, TurnEngine, TurnEvent,
+    CycleAction, CycleState, EventBus, LlmProvider, RunningGuard, TrySetRunningError, TurnEngine,
+    TurnEvent,
 };
 use luwu_llm::openai::OpenAiProvider;
-use luwu_memory::{
-    compile_summary, CorrectionDetector, CorrectionPattern, MemoryStore,
-};
+use luwu_memory::{CorrectionDetector, CorrectionPattern, MemoryStore, compile_summary};
 
-use crate::app::{builtin_tool_registry, AppState};
+use crate::app::{AppState, builtin_tool_registry};
 use crate::handlers::workers::{
     run_consolidation_writer, run_observer_worker, run_reflector_worker,
 };
@@ -61,29 +59,33 @@ pub async fn agent_chat(
         Ok(r) => r,
         Err(e) => {
             let _ = state.sessions.set_running(&id, false).await;
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                e.to_string(),
-            )
-                .into_response();
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
 
     // Build engine.
-    let provider = OpenAiProvider::with_client(&resolved.api_key, &resolved.base_url, state.http_client.clone());
+    let provider = OpenAiProvider::with_client(
+        &resolved.api_key,
+        &resolved.base_url,
+        state.http_client.clone(),
+    );
     let provider_arc: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(provider);
     let tools = builtin_tool_registry();
     let events = EventBus::new(256);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let engine = TurnEngine::new(provider_arc.clone(), tools, state.skills.clone(), events, working_dir.clone());
+    let engine = TurnEngine::new(
+        provider_arc.clone(),
+        tools,
+        state.skills.clone(),
+        events,
+        working_dir.clone(),
+    );
 
     // Memory store and cycle state.
     let luwu_home = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".luwu");
-    let memory = std::sync::Arc::new(
-        MemoryStore::new(&luwu_home, &state.working_dir, &id)
-    );
+    let memory = std::sync::Arc::new(MemoryStore::new(&luwu_home, &state.working_dir, &id));
     let mut cycle = CycleState::default();
 
     let model = session.data.model.clone();
@@ -107,7 +109,9 @@ pub async fn agent_chat(
             let entry = format!("[{}] {}", label, correction.full_message);
             let mem_c = memory.clone();
             state.spawn_worker(async move {
-                if let Err(e) = mem_c.append_correction(&entry) { tracing::warn!(%e, "Failed to save correction"); }
+                if let Err(e) = mem_c.append_correction(&entry) {
+                    tracing::warn!(%e, "Failed to save correction");
+                }
             });
             tracing::info!("Correction detected and saved");
         }

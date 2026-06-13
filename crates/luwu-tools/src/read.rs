@@ -87,15 +87,13 @@ impl Tool for ReadTool {
     }
 
     async fn execute(&self, input: Value, context: ToolContext) -> Result<ToolOutput> {
-        let path = input["path"]
-            .as_str()
-            .ok_or_else(|| {
-                luwu_core::LuwuError::Tool(
-                    "The 'path' parameter is required. \
+        let path = input["path"].as_str().ok_or_else(|| {
+            luwu_core::LuwuError::Tool(
+                "The 'path' parameter is required. \
                      Provide a file or directory path relative to the working directory."
-                        .into(),
-                )
-            })?;
+                    .into(),
+            )
+        })?;
 
         let file_path = context.working_dir.join(path);
 
@@ -199,13 +197,10 @@ async fn read_file(
     Ok(ToolOutput::text(result))
 }
 
-async fn read_directory(
-    canonical: &std::path::Path,
-    path: &str,
-) -> Result<ToolOutput> {
-    let mut read_dir = tokio::fs::read_dir(canonical)
-        .await
-        .map_err(|e| luwu_core::LuwuError::Tool(format!("Failed to read directory `{path}`: {e}")))?;
+async fn read_directory(canonical: &std::path::Path, path: &str) -> Result<ToolOutput> {
+    let mut read_dir = tokio::fs::read_dir(canonical).await.map_err(|e| {
+        luwu_core::LuwuError::Tool(format!("Failed to read directory `{path}`: {e}"))
+    })?;
 
     let mut file_entries: Vec<String> = Vec::new();
     let mut dir_entries: Vec<String> = Vec::new();
@@ -256,5 +251,5 @@ fn format_entry(name: &str, size: u64) -> String {
 /// Quick binary check — look for null bytes in the first 8KB.
 fn is_binary(data: &[u8]) -> bool {
     let check_len = data.len().min(8192);
-    data[..check_len].iter().any(|&b| b == 0)
+    data[..check_len].contains(&0)
 }

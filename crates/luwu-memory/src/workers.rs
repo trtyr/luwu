@@ -59,7 +59,11 @@ pub struct Observation {
 
 impl Observation {
     /// Create a new observation with auto-generated ID and current timestamp.
-    pub fn new(priority: Priority, category: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn new(
+        priority: Priority,
+        category: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             id: gen_hex_id(),
             timestamp: Utc::now().to_rfc3339(),

@@ -187,9 +187,8 @@ async fn execute_anchor_edit(
     })?;
 
     // Verify anchor.
-    let old_line = hashline::verify_anchor(content, line_num, expected_hash).map_err(|e| {
-        luwu_core::LuwuError::Tool(e)
-    })?;
+    let old_line = hashline::verify_anchor(content, line_num, expected_hash)
+        .map_err(|e| luwu_core::LuwuError::Tool(e))?;
 
     let total_lines = content.lines().count();
 
@@ -205,7 +204,9 @@ async fn execute_anchor_edit(
 
     tokio::fs::write(canonical, &new_content)
         .await
-        .map_err(|e| luwu_core::LuwuError::Tool(format!("Failed to write changes to `{path}`: {e}")))?;
+        .map_err(|e| {
+            luwu_core::LuwuError::Tool(format!("Failed to write changes to `{path}`: {e}"))
+        })?;
 
     if new_text.is_empty() {
         Ok(ToolOutput::text(format!(
@@ -269,22 +270,21 @@ async fn execute_text_edit(
     let norm_content = normalize(content);
     let resilient_count = norm_content.matches(&norm_old).count();
 
-    if resilient_count > 0 {
-        if let Some((actual_old, actual_count)) =
+    if resilient_count > 0
+        && let Some((actual_old, actual_count)) =
             find_resilient_match(content, old_text, &norm_old, replace_all)
-        {
-            return apply_replacement(
-                content,
-                &actual_old,
-                new_text,
-                replace_all,
-                actual_count,
-                path,
-                canonical,
-                MatchTier::Resilient,
-            )
-            .await;
-        }
+    {
+        return apply_replacement(
+            content,
+            &actual_old,
+            new_text,
+            replace_all,
+            actual_count,
+            path,
+            canonical,
+            MatchTier::Resilient,
+        )
+        .await;
     }
 
     // ── Tier 3: Fuzzy suggestion (no auto-apply) ──
@@ -360,7 +360,9 @@ async fn apply_replacement(
     // Write back.
     tokio::fs::write(canonical, &new_content)
         .await
-        .map_err(|e| luwu_core::LuwuError::Tool(format!("Failed to write changes to `{path}`: {e}")))?;
+        .map_err(|e| {
+            luwu_core::LuwuError::Tool(format!("Failed to write changes to `{path}`: {e}"))
+        })?;
 
     let old_lines = old_text.lines().count();
     let new_lines = new_text.lines().count();
@@ -372,11 +374,9 @@ async fn apply_replacement(
 
     let tier_note = match tier {
         MatchTier::Strict => String::new(),
-        MatchTier::Resilient => {
-            "\nNote: Matched via resilient mode (whitespace-normalized). \
+        MatchTier::Resilient => "\nNote: Matched via resilient mode (whitespace-normalized). \
              The indentation or spacing in the file differed slightly from your `old_text`."
-                .to_string()
-        }
+            .to_string(),
     };
 
     Ok(ToolOutput::text(format!(
@@ -447,7 +447,10 @@ fn find_resilient_match(
     }
 
     let count = matches.len();
-    let actual_old = matches.into_iter().next().expect("matches non-empty checked above");
+    let actual_old = matches
+        .into_iter()
+        .next()
+        .expect("matches non-empty checked above");
     Some((actual_old, count))
 }
 
@@ -462,15 +465,14 @@ fn find_fuzzy_suggestion(content: &str, old_text: &str) -> String {
     }
 
     let old_line_count = old_lines.len();
-    let window_count = old_line_count.max(3).min(20);
+    let window_count = old_line_count.clamp(3, 20);
 
     let old_words: Vec<&str> = old_text.split_whitespace().collect();
     if old_words.is_empty() {
         return String::new();
     }
 
-    let old_word_set: std::collections::HashSet<&str> =
-        old_words.iter().copied().collect();
+    let old_word_set: std::collections::HashSet<&str> = old_words.iter().copied().collect();
 
     let mut best_start = 0;
     let mut best_score = 0.0f64;

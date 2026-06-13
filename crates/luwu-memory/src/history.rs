@@ -109,9 +109,7 @@ pub struct TokenEstimator {
 
 impl Default for TokenEstimator {
     fn default() -> Self {
-        Self {
-            chars_per_token: 4,
-        }
+        Self { chars_per_token: 4 }
     }
 }
 
@@ -124,7 +122,9 @@ impl TokenEstimator {
         let char_count = text.chars().count();
         let cjk_count = text
             .chars()
-            .filter(|c| ('\u{4E00}'..='\u{9FFF}').contains(c) || ('\u{3040}'..='\u{30FF}').contains(c))
+            .filter(|c| {
+                ('\u{4E00}'..='\u{9FFF}').contains(c) || ('\u{3040}'..='\u{30FF}').contains(c)
+            })
             .count();
         let ratio = if cjk_count * 2 > char_count {
             2 // CJK-heavy: each CJK char ≈ 1-2 tokens
@@ -141,11 +141,19 @@ impl TokenEstimator {
             use luwu_core::ContentPart;
             match part {
                 ContentPart::Text { text } => total += self.estimate(text),
-                ContentPart::ToolCall { id: _, name, arguments } => {
+                ContentPart::ToolCall {
+                    id: _,
+                    name,
+                    arguments,
+                } => {
                     total += self.estimate(name);
                     total += self.estimate(&arguments.to_string());
                 }
-                ContentPart::ToolResult { id: _, content, is_error: _ } => {
+                ContentPart::ToolResult {
+                    id: _,
+                    content,
+                    is_error: _,
+                } => {
                     total += self.estimate(content);
                 }
             }
@@ -189,14 +197,16 @@ mod tests {
             role: "user".into(),
             content: "hello".into(),
             tokens: 1,
-        }).unwrap();
+        })
+        .unwrap();
 
         log.append(&HistoryEntry {
             timestamp: "2026-01-01T00:00:01Z".into(),
             role: "assistant".into(),
             content: "hi there".into(),
             tokens: 2,
-        }).unwrap();
+        })
+        .unwrap();
 
         let entries = log.read_all().unwrap();
         assert_eq!(entries.len(), 2);

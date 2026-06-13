@@ -3,8 +3,8 @@
 mod app;
 mod config;
 mod error;
-mod types;
 mod handlers;
+mod types;
 
 use std::net::SocketAddr;
 
@@ -20,7 +20,10 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .init();
 
-    println!("陆吾 v{} — 昆仑山的管家 (server)", env!("CARGO_PKG_VERSION"));
+    println!(
+        "陆吾 v{} — 昆仑山的管家 (server)",
+        env!("CARGO_PKG_VERSION")
+    );
     println!();
 
     // Load config.
@@ -42,7 +45,10 @@ async fn main() {
     let resolved = config.resolve(None).unwrap();
     println!("\x1b[2mprovider: {}\x1b[0m", resolved.provider_name);
     println!("\x1b[2mmodel:    {}\x1b[0m", resolved.model);
-    println!("\x1b[2mconfig:   {}\x1b[0m", config::config_path().display());
+    println!(
+        "\x1b[2mconfig:   {}\x1b[0m",
+        config::config_path().display()
+    );
     println!();
 
     // Set up luwu home directory.
@@ -56,7 +62,10 @@ async fn main() {
     let sessions = match SessionManager::with_persistence(&sessions_dir) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Failed to initialize sessions directory {}: {e}", sessions_dir.display());
+            eprintln!(
+                "Failed to initialize sessions directory {}: {e}",
+                sessions_dir.display()
+            );
             std::process::exit(1);
         }
     };
@@ -66,11 +75,10 @@ async fn main() {
     println!("\x1b[2msessions: {} recovered\x1b[0m", recovered);
 
     // Discover skills.
-    let skills = luwu_core::SkillRegistry::discover(&luwu_home, &working_dir)
-        .unwrap_or_else(|e| {
-            tracing::warn!("Skill discovery failed: {e}");
-            luwu_core::SkillRegistry::new()
-        });
+    let skills = luwu_core::SkillRegistry::discover(&luwu_home, &working_dir).unwrap_or_else(|e| {
+        tracing::warn!("Skill discovery failed: {e}");
+        luwu_core::SkillRegistry::new()
+    });
     println!("\x1b[2mskills:   {} loaded\x1b[0m", skills.len());
 
     // Build shared HTTP client.

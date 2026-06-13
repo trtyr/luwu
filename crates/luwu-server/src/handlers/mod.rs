@@ -9,18 +9,18 @@
 //! - `memory_ops` — checkpoint + history search
 //! - `workers` — memory worker functions (consolidation, observer, reflector, checkpoint)
 
-pub mod health;
-pub mod chat;
-pub mod sessions;
 pub mod agent;
-pub mod skills;
+pub mod chat;
+pub mod health;
 pub mod memory_ops;
+pub mod sessions;
+pub mod skills;
 pub mod workers;
 
 // Flat re-exports so `handlers::xxx` keeps working in app.rs router.
-pub use health::{health, list_models};
-pub use chat::chat_completions;
-pub use sessions::{list_sessions, create_session, get_session, delete_session, cancel_turn};
 pub use agent::agent_chat;
-pub use skills::{list_skills, get_skill_detail};
+pub use chat::chat_completions;
+pub use health::{health, list_models};
 pub use memory_ops::{get_checkpoint, search_history};
+pub use sessions::{cancel_turn, create_session, delete_session, get_session, list_sessions};
+pub use skills::{get_skill_detail, list_skills};

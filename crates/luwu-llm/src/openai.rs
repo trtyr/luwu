@@ -13,12 +13,10 @@
 //! Any model available via the OpenAI API: gpt-4o, gpt-4.1, o3, o4-mini, etc.
 //! Also works with OpenAI-compatible endpoints (Ollama, vLLM) via `base_url` override.
 
+use crate::error::LlmError;
 use async_trait::async_trait;
 use futures::StreamExt;
-use luwu_core::{
-    ContentPart, LlmEvent, LlmProvider, LlmRequest, LlmUsage, Message, Result, Role,
-};
-use crate::error::LlmError;
+use luwu_core::{ContentPart, LlmEvent, LlmProvider, LlmRequest, LlmUsage, Message, Result, Role};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
@@ -58,7 +56,11 @@ impl OpenAiProvider {
     }
 
     /// Create a provider with an existing reqwest client (shared connection pool).
-    pub fn with_client(api_key: impl Into<String>, base_url: impl Into<String>, client: Client) -> Self {
+    pub fn with_client(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        client: Client,
+    ) -> Self {
         Self {
             client,
             api_key: api_key.into(),
@@ -131,26 +133,26 @@ async fn consume_stream(
     let mut pending_tool_calls: HashMap<String, PartialToolCall> = HashMap::new();
 
     loop {
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            event_stream.next(),
-        ).await {
-            Ok(Some(r)) => r,
-            Ok(None) => break, // stream ended normally
-            Err(_) => {
-                // LLM stalled mid-stream — 30s with no data
-                let _ = tx.send(Err(LlmError::Timeout.into())).await;
-                break;
-            }
-        };
+        let result =
+            match tokio::time::timeout(std::time::Duration::from_secs(30), event_stream.next())
+                .await
+            {
+                Ok(Some(r)) => r,
+                Ok(None) => break, // stream ended normally
+                Err(_) => {
+                    // LLM stalled mid-stream — 30s with no data
+                    let _ = tx.send(Err(LlmError::Timeout.into())).await;
+                    break;
+                }
+            };
 
         let sse_event = match result {
             Ok(e) => e,
             Err(e) => {
                 let _ = tx
-                    .send(Err(LlmError::Stream(format!(
-                        "SSE stream error: {e}"
-                    )).into()))
+                    .send(Err(
+                        LlmError::Stream(format!("SSE stream error: {e}")).into()
+                    ))
                     .await;
                 break;
             }
@@ -172,9 +174,7 @@ async fn consume_stream(
             if let Some(content) = &delta.content
                 && !content.is_empty()
             {
-                let _ = tx
-                    .send(Ok(LlmEvent::TextDelta(content.clone())))
-                    .await;
+                let _ = tx.send(Ok(LlmEvent::TextDelta(content.clone()))).await;
             }
 
             // Reasoning/thinking content (GLM-4.7, DeepSeek, MiniMax).
@@ -280,14 +280,17 @@ fn build_request_body(req: &LlmRequest) -> Result<Value> {
 
     if !req.tools.is_empty() {
         body["tools"] = serde_json::json!(
-            req.tools.iter().map(|t| serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                }
-            })).collect::<Vec<_>>()
+            req.tools
+                .iter()
+                .map(|t| serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                }))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -362,13 +365,11 @@ fn convert_message(msg: &Message) -> Result<Value> {
     if role == "tool" {
         let result_part = msg.content.first();
         return match result_part {
-            Some(ContentPart::ToolResult { id, content, .. }) => {
-                Ok(serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": id,
-                    "content": content,
-                }))
-            }
+            Some(ContentPart::ToolResult { id, content, .. }) => Ok(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "content": content,
+            })),
             _ => Err(luwu_core::LuwuError::Llm(
                 "Tool message must contain a ToolResult".into(),
             )),

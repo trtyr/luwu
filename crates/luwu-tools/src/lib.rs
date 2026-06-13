@@ -12,12 +12,12 @@
 
 pub mod bash;
 pub mod edit;
-pub mod read;
-pub mod grep;
-pub mod write;
-pub mod web_fetch;
-pub mod memory_search;
 pub mod error;
+pub mod grep;
+pub mod memory_search;
+pub mod read;
+pub mod web_fetch;
+pub mod write;
 
 pub mod hashline;
 use luwu_core::Tool;

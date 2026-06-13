@@ -112,7 +112,7 @@ pub fn compile(messages: &[Message], working_dir: &Path) -> DeterministicSummary
     let session_goal = messages
         .iter()
         .find(|m| m.role == Role::User)
-        .and_then(|m| first_text(m))
+        .and_then(first_text)
         .unwrap_or_default();
 
     // 2. File changes — scan tool calls for write/edit
@@ -121,20 +121,22 @@ pub fn compile(messages: &[Message], working_dir: &Path) -> DeterministicSummary
 
     for msg in messages {
         for part in &msg.content {
-            if let ContentPart::ToolCall { name, arguments, .. } = part {
-                if let Some(path) = extract_path_from_tool_call(name, arguments) {
-                    let action = if name == "write" && !seen_paths.contains(&path) {
-                        "Created".to_string()
-                    } else {
-                        "Modified".to_string()
-                    };
-                    seen_paths.insert(path.clone());
-                    files_changed.push(FileChange {
-                        path,
-                        action,
-                        tool: name.clone(),
-                    });
-                }
+            if let ContentPart::ToolCall {
+                name, arguments, ..
+            } = part
+                && let Some(path) = extract_path_from_tool_call(name, arguments)
+            {
+                let action = if name == "write" && !seen_paths.contains(&path) {
+                    "Created".to_string()
+                } else {
+                    "Modified".to_string()
+                };
+                seen_paths.insert(path.clone());
+                files_changed.push(FileChange {
+                    path,
+                    action,
+                    tool: name.clone(),
+                });
             }
         }
     }
@@ -146,10 +148,13 @@ pub fn compile(messages: &[Message], working_dir: &Path) -> DeterministicSummary
     let mut blockers = Vec::new();
     for msg in messages {
         for part in &msg.content {
-            if let ContentPart::ToolResult { content, is_error, .. } = part {
-                if *is_error && !content.is_empty() {
-                    blockers.push(content.clone());
-                }
+            if let ContentPart::ToolResult {
+                content, is_error, ..
+            } = part
+                && *is_error
+                && !content.is_empty()
+            {
+                blockers.push(content.clone());
             }
         }
     }
@@ -185,7 +190,10 @@ pub fn compile(messages: &[Message], working_dir: &Path) -> DeterministicSummary
 /// Extract the file path from a tool call's arguments.
 fn extract_path_from_tool_call(tool_name: &str, arguments: &serde_json::Value) -> Option<String> {
     match tool_name {
-        "write" | "edit" => arguments.get("path").and_then(|v| v.as_str()).map(String::from),
+        "write" | "edit" => arguments
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         _ => None,
     }
 }
@@ -233,7 +241,10 @@ mod tests {
         ];
 
         let summary = compile(&messages, Path::new("/tmp"));
-        assert_eq!(summary.session_goal, "Fix the authentication bug in login flow");
+        assert_eq!(
+            summary.session_goal,
+            "Fix the authentication bug in login flow"
+        );
         assert!(summary.commits.is_empty() || !summary.commits.is_empty()); // depends on cwd
         assert!(!summary.transcript_tail.is_empty());
     }

@@ -7,7 +7,7 @@
 //! - History: full conversation log (JSONL)
 
 use crate::checkpoint::Checkpoint;
-use crate::history::{HistoryLog, HistoryEntry, TokenEstimator};
+use crate::history::{HistoryEntry, HistoryLog, TokenEstimator};
 use luwu_core::Message;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -162,7 +162,11 @@ impl MemoryStore {
     }
 
     /// Search history by keyword.
-    pub fn search_history(&self, query: &str, max_results: usize) -> std::io::Result<Vec<HistoryEntry>> {
+    pub fn search_history(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> std::io::Result<Vec<HistoryEntry>> {
         let log = self.history_log()?;
         log.search(query, max_results)
     }
@@ -171,10 +175,7 @@ impl MemoryStore {
 
     /// Build the full rebuild context from all memory layers.
     /// This is injected into the new cycle's system prompt.
-    pub fn build_rebuild_context(
-        &self,
-        recent_user_messages: &[String],
-    ) -> String {
+    pub fn build_rebuild_context(&self, recent_user_messages: &[String]) -> String {
         let mut inner = String::new();
 
         // 1. Checkpoint (working state) — highest priority.
@@ -353,14 +354,14 @@ impl MemoryStore {
     /// Append an observation to the session ledger (JSONL).
     pub fn append_observation(&self, obs: &crate::workers::Observation) -> std::io::Result<()> {
         let path = self.session_root.join("observations.jsonl");
-        let line = serde_json::to_string(obs).map_err(|e| std::io::Error::other(e))?;
+        let line = serde_json::to_string(obs).map_err(std::io::Error::other)?;
         append_to_file(&path, &format!("{line}\n"))
     }
 
     /// Append a reflection to the session ledger (JSONL).
     pub fn append_reflection(&self, refl: &crate::workers::Reflection) -> std::io::Result<()> {
         let path = self.session_root.join("reflections.jsonl");
-        let line = serde_json::to_string(refl).map_err(|e| std::io::Error::other(e))?;
+        let line = serde_json::to_string(refl).map_err(std::io::Error::other)?;
         append_to_file(&path, &format!("{line}\n"))
     }
 
@@ -384,7 +385,10 @@ impl MemoryStore {
         }
         let all = self.read_observations();
         let id_set: std::collections::HashSet<&String> = ids.iter().collect();
-        let kept: Vec<_> = all.into_iter().filter(|o| !id_set.contains(&o.id)).collect();
+        let kept: Vec<_> = all
+            .into_iter()
+            .filter(|o| !id_set.contains(&o.id))
+            .collect();
         let content: String = kept
             .iter()
             .filter_map(|o| serde_json::to_string(o).ok())
@@ -409,7 +413,10 @@ impl MemoryStore {
         if !observations.is_empty() {
             out.push_str("## Observations\n");
             for o in &observations {
-                out.push_str(&format!("[{}] {} [{}] {}\n\n", o.id, o.timestamp, o.priority, o.content));
+                out.push_str(&format!(
+                    "[{}] {} [{}] {}\n\n",
+                    o.id, o.timestamp, o.priority, o.content
+                ));
             }
         }
 
@@ -440,9 +447,7 @@ impl MemoryStore {
             }
         }
 
-        for entry in split_entries(&read_file_or_empty(
-            self.session_root.join("notes.md"),
-        )) {
+        for entry in split_entries(&read_file_or_empty(self.session_root.join("notes.md"))) {
             if entry.to_lowercase().contains(&query_lower) {
                 results.push(format!("[notes] {}", entry.trim()));
             }

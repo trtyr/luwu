@@ -63,7 +63,11 @@ pub fn parse_anchor(anchor: &str) -> Option<(usize, &str)> {
 ///
 /// Returns `Ok(line_content)` if the hash matches, or an error message
 /// describing the mismatch.
-pub fn verify_anchor<'a>(content: &'a str, line_num: usize, expected_hash: &str) -> Result<&'a str, String> {
+pub fn verify_anchor<'a>(
+    content: &'a str,
+    line_num: usize,
+    expected_hash: &str,
+) -> Result<&'a str, String> {
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
 

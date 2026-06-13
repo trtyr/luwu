@@ -89,28 +89,30 @@ impl Config {
 
         // ── Field validation (Phase 4.4) ──
         if provider.api_key.trim().is_empty() {
-            return Err(ConfigError::InvalidConfig(
-                format!("Provider '{name}' has an empty api_key"),
-            ));
+            return Err(ConfigError::InvalidConfig(format!(
+                "Provider '{name}' has an empty api_key"
+            )));
         }
-        if base_url.is_empty() || !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
-            return Err(ConfigError::InvalidConfig(
-                format!("Provider '{name}' base_url must be a valid http(s) URL, got: {base_url}"),
-            ));
+        if base_url.is_empty()
+            || !(base_url.starts_with("http://") || base_url.starts_with("https://"))
+        {
+            return Err(ConfigError::InvalidConfig(format!(
+                "Provider '{name}' base_url must be a valid http(s) URL, got: {base_url}"
+            )));
         }
-        if let Some(t) = provider.temperature {
-            if !(0.0..=2.0).contains(&t) {
-                return Err(ConfigError::InvalidConfig(
-                    format!("Provider '{name}' temperature must be 0.0–2.0, got: {t}"),
-                ));
-            }
+        if let Some(t) = provider.temperature
+            && !(0.0..=2.0).contains(&t)
+        {
+            return Err(ConfigError::InvalidConfig(format!(
+                "Provider '{name}' temperature must be 0.0–2.0, got: {t}"
+            )));
         }
-        if let Some(mt) = provider.max_tokens {
-            if mt == 0 {
-                return Err(ConfigError::InvalidConfig(
-                    format!("Provider '{name}' max_tokens must be > 0"),
-                ));
-            }
+        if let Some(mt) = provider.max_tokens
+            && mt == 0
+        {
+            return Err(ConfigError::InvalidConfig(format!(
+                "Provider '{name}' max_tokens must be > 0"
+            )));
         }
 
         Ok(ResolvedConfig {

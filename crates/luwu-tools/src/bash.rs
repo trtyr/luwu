@@ -6,8 +6,8 @@
 use async_trait::async_trait;
 use luwu_core::{Result, Tool, ToolContext, ToolOutput};
 use serde_json::Value;
-use tracing::debug;
 use std::sync::OnceLock;
+use tracing::debug;
 
 /// Maximum output size in bytes (~25KB, roughly 8K tokens).
 const MAX_OUTPUT: usize = 25 * 1024;
@@ -175,11 +175,7 @@ impl Tool for BashTool {
 
 /// Truncate a string for display in error messages.
 fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..max]
-    }
+    if s.len() <= max { s } else { &s[..max] }
 }
 
 /// Check whether `rtk` is available on PATH. Result is cached.

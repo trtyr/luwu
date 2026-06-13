@@ -74,10 +74,10 @@ impl CorrectionDetector {
         }
 
         // 2. Check rate limiter.
-        if let Some(last) = self.last_save_turn {
-            if self.current_turn - last < self.min_turn_gap {
-                return None;
-            }
+        if let Some(last) = self.last_save_turn
+            && self.current_turn - last < self.min_turn_gap
+        {
+            return None;
         }
 
         // 3. Check strong patterns.
@@ -152,10 +152,7 @@ impl CorrectionDetector {
             "不能用",
             "别用",
         ];
-        STRONG
-            .iter()
-            .find(|p| lower.contains(*p))
-            .copied()
+        STRONG.iter().find(|p| lower.contains(*p)).copied()
     }
 
     /// Check if message matches weak correction patterns.
@@ -174,10 +171,7 @@ impl CorrectionDetector {
             "改一下",
             "换成",
         ];
-        WEAK
-            .iter()
-            .find(|p| lower.contains(*p))
-            .copied()
+        WEAK.iter().find(|p| lower.contains(*p)).copied()
     }
 }
 
@@ -229,7 +223,9 @@ mod tests {
     fn detect_weak_pattern() {
         let mut d = CorrectionDetector::new();
         d.advance_turn();
-        let r = d.detect("wait, I think we should use a different approach").unwrap();
+        let r = d
+            .detect("wait, I think we should use a different approach")
+            .unwrap();
         assert_eq!(r.pattern_type, CorrectionPattern::Weak);
     }
 }
