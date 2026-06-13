@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use luwu_core::{
+    message::Role,
     LlmProvider,
     EventBus, Message, SessionManager, SessionSummary, ToolRegistry, TurnEngine,
     TurnEvent, CycleState, CycleAction,
@@ -36,7 +37,9 @@ use luwu_llm::openai::OpenAiProvider;
 use luwu_tools;
 use luwu_memory::{
     MemoryFileType, CorrectionDetector, CorrectionPattern, MemoryStore,
+    Observation, Priority, Reflection,
     apply_consolidation, consolidation_prompt,
+    compile_summary, observer_prompt, reflector_prompt,
 };
 
 use crate::config::Config;
@@ -721,6 +724,8 @@ async fn agent_chat(
             tracing::info!("Correction detected and saved");
         }
     }
+    // Clone messages for deterministic compaction + observer worker.
+    let messages_for_workers = messages.clone();
     let event_rx = engine
         .run_stream(session_id, model, messages, req.message, Some(cancel_token))
         .await;
@@ -781,12 +786,18 @@ async fn agent_chat(
                         if let CycleAction::Checkpoint = cycle.add_tool_call() {
                             cycle.mark_tool_call_checkpoint();
 
+                            // Deterministic compaction — zero LLM cost.
+                            let det_summary = compile_summary(&messages_for_workers, &working_dir);
+                            memory.write_checkpoint_raw(&det_summary.to_markdown()).ok();
+
+                            // Spawn Observer worker.
                             let _wm = memory.clone();
                             let rb = resolved.base_url.clone();
                             let rk = resolved.api_key.clone();
+                            let obs_msgs = messages_for_workers.clone();
 
                             writer_handle = Some(tokio::spawn(async move {
-                                run_checkpoint_writer(&rk, &rb, &[], &_wm).await.ok();
+                                run_observer_worker(&rk, &rb, &obs_msgs, &_wm).await.ok();
                             }));
 
                             let tc_event = serde_json::json!({
@@ -811,12 +822,18 @@ async fn agent_chat(
                         let _writer_memory = memory.clone();
                         let resolved_base = resolved.base_url.clone();
                         let resolved_key = resolved.api_key.clone();
+                        let obs_msgs = messages_for_workers.clone();
 
+                        // Deterministic compaction — zero LLM cost.
+                        let det_summary = compile_summary(&messages_for_workers, &working_dir);
+                        memory.write_checkpoint_raw(&det_summary.to_markdown()).ok();
+
+                        // Spawn Observer worker.
                         writer_handle = Some(tokio::spawn(async move {
-                            run_checkpoint_writer(
+                            run_observer_worker(
                                 &resolved_key,
                                 &resolved_base,
-                                &[],
+                                &obs_msgs,
                                 &_writer_memory,
                             ).await.ok();
                         }));
@@ -829,9 +846,22 @@ async fn agent_chat(
                         yield Ok(SseEvent::default().data(cp_event.to_string()));
                     }
                     CycleAction::Rebuild => {
+                        // Await Observer if still running.
                         if let Some(h) = writer_handle.take() {
                             h.await.ok();
                         }
+
+                        // Spawn Reflector to synthesize observations into reflections.
+                        let _refl_memory = memory.clone();
+                        let _refl_base = resolved.base_url.clone();
+                        let _refl_key = resolved.api_key.clone();
+                        let _ = tokio::spawn(async move {
+                            run_reflector_worker(
+                                &_refl_key,
+                                &_refl_base,
+                                &_refl_memory,
+                            ).await.ok();
+                        });
 
                         let rb_event = serde_json::json!({
                             "type": "rebuild",
@@ -1022,6 +1052,181 @@ async fn run_checkpoint_writer(
     }
 
     Ok(())
+}
+
+/// Convert messages into a readable transcript for LLM workers.
+fn messages_to_transcript(messages: &[Message], max_chars: usize) -> String {
+    use luwu_core::message::ContentPart;
+    let mut out = String::new();
+    for msg in messages {
+        let role = match msg.role {
+            Role::User => "User",
+            Role::Assistant => "Assistant",
+            _ => "System",
+        };
+        for part in &msg.content {
+            match part {
+                ContentPart::Text { text } => {
+                    out.push_str(&format!("{role}: {text}\n\n"));
+                }
+                ContentPart::ToolCall { name, .. } => {
+                    out.push_str(&format!("{role}: [called tool: {name}]\n\n"));
+                }
+                ContentPart::ToolResult { content, is_error, .. } => {
+                    let prefix = if *is_error { "Tool Error" } else { "Tool Result" };
+                    out.push_str(&format!("{prefix}: {content}\n\n"));
+                }
+            }
+            if out.len() > max_chars {
+                out.truncate(max_chars);
+                out.push_str("...[truncated]");
+                return out;
+            }
+        }
+    }
+    out
+}
+
+/// Run the Observer worker — extracts timestamped observations from conversation.
+async fn run_observer_worker(
+    api_key: &str,
+    base_url: &str,
+    messages: &[Message],
+    memory: &MemoryStore,
+) -> Result<usize, String> {
+    let transcript = messages_to_transcript(messages, 30_000);
+    if transcript.is_empty() {
+        return Ok(0);
+    }
+
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "model": "MiniMax-M3",
+        "messages": [
+            {"role": "system", "content": observer_prompt()},
+            {"role": "user", "content": transcript}
+        ],
+        "temperature": 0.1,
+        "max_tokens": 2048
+    });
+
+    let resp = client
+        .post(format!("{base_url}/chat/completions"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Observer request failed: {e}"))?;
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Observer parse failed: {e}"))?;
+
+    let output = data["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("");
+
+    let mut count = 0;
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            let priority = match v.get("priority").and_then(|p| p.as_str()) {
+                Some("high") => Priority::High,
+                Some("low") => Priority::Low,
+                _ => Priority::Medium,
+            };
+            let category = v.get("category").and_then(|c| c.as_str()).unwrap_or("event").to_string();
+            let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            if !content.is_empty() {
+                let obs = Observation::new(priority, category, content);
+                memory.append_observation(&obs).ok();
+                count += 1;
+            }
+        }
+    }
+
+    tracing::info!("Observer extracted {} observations", count);
+    Ok(count)
+}
+
+/// Run the Reflector worker — synthesizes durable reflections from observations.
+async fn run_reflector_worker(
+    api_key: &str,
+    base_url: &str,
+    memory: &MemoryStore,
+) -> Result<usize, String> {
+    let observations = memory.read_observations();
+    if observations.is_empty() {
+        return Ok(0);
+    }
+
+    let obs_text: String = observations
+        .iter()
+        .map(|o| format!("[{}] {} ({}): {}", o.id, o.timestamp, o.priority, o.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "model": "MiniMax-M3",
+        "messages": [
+            {"role": "system", "content": reflector_prompt()},
+            {"role": "user", "content": obs_text}
+        ],
+        "temperature": 0.1,
+        "max_tokens": 2048
+    });
+
+    let resp = client
+        .post(format!("{base_url}/chat/completions"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Reflector request failed: {e}"))?;
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Reflector parse failed: {e}"))?;
+
+    let output = data["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("");
+
+    let mut count = 0;
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let source_ids: Vec<String> = v
+                .get("source_ids")
+                .and_then(|s| s.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !content.is_empty() {
+                let refl = Reflection::new(content, source_ids);
+                memory.append_reflection(&refl).ok();
+                count += 1;
+            }
+        }
+    }
+
+    tracing::info!("Reflector synthesized {} reflections", count);
+    Ok(count)
 }
 
 // ---------------------------------------------------------------------------

@@ -220,6 +220,13 @@ impl MemoryStore {
             inner.push_str(&corrections);
         }
 
+        // 7. Session ledger — observations and reflections from memory workers.
+        let ledger = self.render_ledger();
+        if !ledger.is_empty() {
+            inner.push_str("\n\n## 会话观察与反思\n\n");
+            inner.push_str(&ledger);
+        }
+
         // 7. Tail reminder.
         inner.push_str("\n\n## 下一步\n\n");
         inner.push_str("请根据以上状态继续工作。从「下一步动作」字段描述的动作开始执行。");
@@ -327,6 +334,74 @@ impl MemoryStore {
     pub fn project_path(&self) -> PathBuf {
         self.project_root.join("project.md")
     }
+
+    // ---- SessionLedger: Observations & Reflections ----
+
+    /// Append an observation to the session ledger (JSONL).
+    pub fn append_observation(&self, obs: &crate::workers::Observation) -> std::io::Result<()> {
+        let path = self.session_root.join("observations.jsonl");
+        let line = serde_json::to_string(obs).map_err(|e| std::io::Error::other(e))?;
+        append_to_file(&path, &format!("{line}\n"))
+    }
+
+    /// Append a reflection to the session ledger (JSONL).
+    pub fn append_reflection(&self, refl: &crate::workers::Reflection) -> std::io::Result<()> {
+        let path = self.session_root.join("reflections.jsonl");
+        let line = serde_json::to_string(refl).map_err(|e| std::io::Error::other(e))?;
+        append_to_file(&path, &format!("{line}\n"))
+    }
+
+    /// Read all observations from the session ledger.
+    pub fn read_observations(&self) -> Vec<crate::workers::Observation> {
+        let path = self.session_root.join("observations.jsonl");
+        read_jsonl(&path)
+    }
+
+    /// Read all reflections from the session ledger.
+    pub fn read_reflections(&self) -> Vec<crate::workers::Reflection> {
+        let path = self.session_root.join("reflections.jsonl");
+        read_jsonl(&path)
+    }
+
+    /// Remove specific observations by ID (used by Dropper).
+    pub fn drop_observations(&self, ids: &[String]) -> std::io::Result<()> {
+        let path = self.session_root.join("observations.jsonl");
+        if !path.exists() {
+            return Ok(());
+        }
+        let all = self.read_observations();
+        let id_set: std::collections::HashSet<&String> = ids.iter().collect();
+        let kept: Vec<_> = all.into_iter().filter(|o| !id_set.contains(&o.id)).collect();
+        let content: String = kept
+            .iter()
+            .filter_map(|o| serde_json::to_string(o).ok())
+            .map(|s| format!("{s}\n"))
+            .collect();
+        std::fs::write(&path, content)
+    }
+
+    /// Render observations and reflections as formatted context for injection.
+    pub fn render_ledger(&self) -> String {
+        let observations = self.read_observations();
+        let reflections = self.read_reflections();
+        let mut out = String::new();
+
+        if !reflections.is_empty() {
+            out.push_str("## Reflections\n");
+            for r in &reflections {
+                out.push_str(&format!("[{}] {}\n\n", r.id, r.content));
+            }
+        }
+
+        if !observations.is_empty() {
+            out.push_str("## Observations\n");
+            for o in &observations {
+                out.push_str(&format!("[{}] {} [{}] {}\n\n", o.id, o.timestamp, o.priority, o.content));
+            }
+        }
+
+        out
+    }
     /// Search across all memory layers (for memory_search tool).
     /// Returns formatted results with layer labels.
     pub fn search_all(&self, query: &str) -> String {
@@ -418,6 +493,18 @@ fn append_to_file(path: &Path, content: &str) -> std::io::Result<()> {
     file.write_all(content.as_bytes())
 }
 
+/// Read a JSONL file and deserialize each line into T.
+fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
 /// Strip HTML comment aging metadata from text.
 /// Removes lines that are exactly `<!-- created: ..., ref: ... -->`.
 fn strip_aging_comments(text: &str) -> String {
