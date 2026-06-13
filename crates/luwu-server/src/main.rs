@@ -1,17 +1,9 @@
 //! Luwu server — HTTP API for the luwu agent.
 
-mod app;
-mod config;
-mod error;
-mod handlers;
-mod services;
-mod types;
-
-use std::net::SocketAddr;
-
-use app::AppState;
-use config::Config;
 use luwu_core::SessionManager;
+use luwu_server::app::AppState;
+use luwu_server::config::Config;
+use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -32,7 +24,10 @@ async fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error loading config: {e}");
-            eprintln!("Config file: {}", config::config_path().display());
+            eprintln!(
+                "Config file: {}",
+                luwu_server::config::config_path().display()
+            );
             std::process::exit(1);
         }
     };
@@ -48,7 +43,7 @@ async fn main() {
     println!("\x1b[2mmodel:    {}\x1b[0m", resolved.model);
     println!(
         "\x1b[2mconfig:   {}\x1b[0m",
-        config::config_path().display()
+        luwu_server::config::config_path().display()
     );
     println!();
 
@@ -100,7 +95,7 @@ async fn main() {
         worker_tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
 
-    let app = crate::app::router(state);
+    let app = luwu_server::app::router(state);
     println!("  GET    /v1/skills             List skills");
     println!("  GET    /v1/skills/{{name}}     Get skill detail");
 
