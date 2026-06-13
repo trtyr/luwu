@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod error;
 mod handlers;
+mod services;
 mod types;
 
 use std::net::SocketAddr;
