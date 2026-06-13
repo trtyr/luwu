@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use luwu_core::{Result, Tool, ToolContext, ToolOutput};
 use serde_json::Value;
 use tracing::debug;
+use std::sync::OnceLock;
 
 /// Maximum output size in bytes (~25KB, roughly 8K tokens).
 const MAX_OUTPUT: usize = 25 * 1024;
@@ -93,11 +94,18 @@ impl Tool for BashTool {
 
         debug!(command = %command, timeout = timeout_secs, "Executing bash command");
 
+        // If rtk is available, prefix the command for token-efficient output.
+        let final_command = if is_rtk_available() {
+            format!("rtk {}", command)
+        } else {
+            command.to_string()
+        };
+
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             tokio::process::Command::new("/bin/sh")
                 .arg("-c")
-                .arg(command)
+                .arg(&final_command)
                 .current_dir(&context.working_dir)
                 .output(),
         )
@@ -172,4 +180,18 @@ fn truncate_str(s: &str, max: usize) -> &str {
     } else {
         &s[..max]
     }
+}
+
+/// Check whether `rtk` is available on PATH. Result is cached.
+fn is_rtk_available() -> bool {
+    static RTK_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *RTK_AVAILABLE.get_or_init(|| {
+        std::process::Command::new("rtk")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
 }
