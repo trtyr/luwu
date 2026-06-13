@@ -10,7 +10,9 @@ interface PromptInputProps {
 
 /**
  * Bottom input prompt — Claude Code style
- * Single-line input with colored ">" prefix, no external deps
+ * Cursor sits at the START when empty (placeholder behind it),
+ * moves to the END of typed text as you type.
+ * IME-friendly: accepts multi-byte CJK composed input.
  */
 export function PromptInput({ onSubmit, disabled, phase }: PromptInputProps) {
   const [value, setValue] = useState('');
@@ -27,7 +29,7 @@ export function PromptInput({ onSubmit, disabled, phase }: PromptInputProps) {
       return;
     }
 
-    // Backspace
+    // Backspace / Delete
     if (key.backspace || key.delete) {
       setValue(v => v.slice(0, -1));
       return;
@@ -39,9 +41,23 @@ export function PromptInput({ onSubmit, disabled, phase }: PromptInputProps) {
       return;
     }
 
-    // Regular character
-    if (input && !key.ctrl && !key.meta && input.length === 1 && input >= ' ') {
-      setValue(v => v + input);
+    // Ctrl+C handled at App level
+
+    // Accept any printable input — IME-composed CJK arrives as
+    // a single multi-byte string, so don't filter by length.
+    // Skip control chars and escape sequences.
+    if (!key.ctrl && !key.meta && !key.escape && !key.tab) {
+      // Filter out pure control characters (code < 0x20 except space)
+      // but accept everything else including multi-char IME results
+      const isPrintable =
+        input.length > 0 &&
+        [...input].every(ch => {
+          const code = ch.codePointAt(0)!;
+          return code >= 0x20 || ch === ' ';
+        });
+      if (isPrintable) {
+        setValue(v => v + input);
+      }
     }
   }, [disabled, value, onSubmit]));
 
@@ -52,12 +68,20 @@ export function PromptInput({ onSubmit, disabled, phase }: PromptInputProps) {
   return (
     <Box marginTop={1}>
       <Text color={disabled ? theme.subtle : theme.suggestion} bold>{'> '}</Text>
+
       {value.length > 0 ? (
-        <Text color={theme.text}>{value}</Text>
+        // Typed text + cursor at end
+        <Text>
+          <Text color={theme.text}>{value}</Text>
+          {!disabled && <Text color={theme.claude}>▏</Text>}
+        </Text>
       ) : (
-        <Text color={theme.subtle} italic>{placeholder}</Text>
+        // Empty: cursor FIRST, then dimmed placeholder behind it
+        <Text>
+          {!disabled && <Text color={theme.claude}>▏</Text>}
+          <Text color={theme.subtle} italic> {placeholder}</Text>
+        </Text>
       )}
-      {!disabled && <Text color={theme.claude}>{'▏'}</Text>}
     </Box>
   );
 }
