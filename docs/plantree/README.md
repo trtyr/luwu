@@ -12,9 +12,9 @@ This is the planning entrypoint for the luwu project. It holds durable direction
 
 | Plan | Status | Current Phase | Last Landed | Next Target |
 | ---- | ------ | ------------- | ----------- | ----------- |
-| [production-readiness](plans/production-readiness/) | Active | Phase B (next-gen architecture) | `0ae242c` — A3 error cleanup (0 warnings) | B1 service layer extraction |
+| [production-readiness](plans/production-readiness/) | Active | Phase B (in progress) | `8897c62` — B2 provider factory | B1 service layer extraction |
 
-**Grade trajectory:** C+ (baseline `9aab677`) → B+ (after 6 phases + deep overhaul A1-A3)
+**Grade trajectory:** C+ (baseline `9aab677`) → B+ (after 6 phases + deep overhaul A1-A3 + B2/B3)
 
 ## Authority Order
 

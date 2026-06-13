@@ -26,10 +26,16 @@ Storage trait deleted, #[tracing::instrument] added to 5 key async functions, re
 handlers/mod.rs 1156 lines → 7 per-feature modules (health/chat/sessions/agent/skills/memory_ops/workers). mod.rs is 27 lines of pure routing declarations.
 
 ### Deep Overhaul A2 — Worker Trait Routing — `d4f3a69`
-LlmProvider::complete() non-streaming method added. All 3 memory workers (consolidation/observer/reflector) now route through Arc<dyn LlmProvider> + model: String. Zero hardcoded "MiniMax-M3" strings. Zero raw reqwest in workers. run_checkpoint_writer deleted (dead code). workers.rs 307 → 199 lines (-35%).
+LlmProvider::complete() non-streaming method added. All 3 memory workers (consolidation/observer/reflector) now route through Arc<dyn LlmProvider> + model: String. Zero hardcoded "MiniMax-M3" strings. Zero raw reqwest in workers. workers.rs 307 → 199 lines (-35%).
 
 ### Deep Overhaul A3 — Error Cleanup — `0ae242c`
-memory_search.rs 3x .unwrap() → .expect(). Dead code warnings resolved (anthropic.rs unused import removed, error.rs documented + #![allow(dead_code)], store.rs root field annotated). **0 errors, 0 warnings** — first clean build ever.
+memory_search.rs 3x .unwrap() → .expect(). Dead code warnings resolved. **0 errors, 0 warnings** — first clean build ever.
+
+### B2 — Provider Factory — `8897c62`
+Provider factory in app.rs: `create_provider(&ResolvedConfig, Client) → Arc<dyn LlmProvider>`. AnthropicProvider now wireable via config. Zero hardcoded OpenAiProvider in handlers. Adding new provider = impl trait + match arm.
+
+### B3 — CI Pipeline — `4d53f70`
+GitHub Actions workflow (build + test + clippy -D warnings + fmt check). 19 clippy warnings auto-fixed. Workspace-wide cargo fmt. **0 clippy warnings, fmt check passes.**
 
 ## In Progress
 
@@ -39,7 +45,7 @@ memory_search.rs 3x .unwrap() → .expect(). Dead code warnings resolved (anthro
 
 ### B1 — Service Layer Extraction (P2)
 
-agent.rs is 332 lines — the only "fat" handler left. Business logic (cycle management, memory worker orchestration, correction detection, message persistence) lives inside the HTTP handler. Extract to a service layer so handlers are thin (extract request → call service → format SSE response).
+agent.rs is ~320 lines — the only "fat" handler left. Business logic (cycle management, memory worker orchestration, correction detection, message persistence) lives inside the HTTP handler. Extract to a service layer so handlers are thin (extract request → call service → format SSE response).
 
 | # | Task | Files | Effort | Acceptance |
 |---|------|-------|--------|------------|
@@ -48,28 +54,6 @@ agent.rs is 332 lines — the only "fat" handler left. Business logic (cycle man
 | B1.3 | Wire services through AppState | `app.rs`, `main.rs` | Small | Services constructed at startup, injected via state |
 
 **Deliverable:** Handlers are thin transport layer. Business logic is testable without HTTP. Clean layer separation.
-
-### B2 — Provider Factory (P2)
-
-AnthropicProvider is fully implemented but never wired. Both chat.rs and agent.rs hardcode `OpenAiProvider`. Add a provider factory that selects by config — this is what the microkernel design was supposed to have.
-
-| # | Task | Files | Effort | Acceptance |
-|---|------|-------|--------|------------|
-| B2.1 | Provider factory in app.rs | `app.rs` | Small | `create_provider(config) -> Arc<dyn LlmProvider>` matching provider name to OpenAi/Anthropic |
-| B2.2 | Wire factory into chat + agent handlers | `chat.rs`, `agent.rs` | Trivial | No hardcoded `OpenAiProvider` in handlers |
-
-**Deliverable:** AnthropicProvider usable via config. Adding a new provider = implement trait + register in factory.
-
-### B3 — CI Pipeline (P2)
-
-No CI exists. Every build is manual. A GitHub Actions workflow ensures builds don't regress.
-
-| # | Task | Files | Effort | Acceptance |
-|---|------|-------|--------|------------|
-| B3.1 | GitHub Actions workflow | `.github/workflows/ci.yml` | Small | cargo build + cargo test + cargo clippy on push/PR |
-| B3.2 | Add clippy config | `clippy.toml` or workspace lint flags | Trivial | `cargo clippy` passes with zero warnings |
-
-**Deliverable:** Push triggers CI. Merge requires green build.
 
 ## Deferred
 
