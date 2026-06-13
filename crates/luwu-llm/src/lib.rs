@@ -15,3 +15,4 @@
 pub mod anthropic;
 pub mod openai;
 mod sse;
+pub mod error;

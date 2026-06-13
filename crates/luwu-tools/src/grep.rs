@@ -270,14 +270,14 @@ fn get_or_create_picker(canonical: &PathBuf) -> SharedFilePicker {
 
     // Fast path: read lock.
     {
-        let guard = cache.read().unwrap();
+        let guard = cache.read().expect("picker cache poisoned");
         if let Some(picker) = guard.get(canonical) {
             return picker.clone();
         }
     }
 
     // Slow path: write lock — create a new picker.
-    let mut guard = cache.write().unwrap();
+    let mut guard = cache.write().expect("picker cache poisoned");
 
     // Double-check after acquiring write lock.
     if let Some(picker) = guard.get(canonical) {
@@ -315,7 +315,7 @@ fn get_or_create_picker(canonical: &PathBuf) -> SharedFilePicker {
                 if let Err(e) = picker.collect_files() {
                     tracing::warn!("Sync scan also failed for {:?}: {}", canonical, e);
                 }
-                let mut shared_guard = shared.write().unwrap();
+                let mut shared_guard = shared.write().expect("shared frecency lock poisoned");
                 *shared_guard = Some(picker);
             }
         }

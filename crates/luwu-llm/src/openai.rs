@@ -18,6 +18,7 @@ use futures::StreamExt;
 use luwu_core::{
     ContentPart, LlmEvent, LlmProvider, LlmRequest, LlmUsage, Message, Result, Role,
 };
+use crate::error::{LlmError, truncate_body};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
@@ -93,16 +94,18 @@ impl LlmProvider for OpenAiProvider {
             .bearer_auth(&self.api_key)
             .header("Content-Type", "application/json")
             .json(&body)
-            .send()
+        .send()
             .await
-            .map_err(|e| luwu_core::LuwuError::Llm(format!("OpenAI request failed: {e}")))?;
+            .map_err(LlmError::Http)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(luwu_core::LuwuError::Llm(format!(
-                "OpenAI API error {status}: {text}"
-            )));
+            return Err(LlmError::Status {
+                status: status.as_u16(),
+                body: truncate_body(&text, 500),
+            }
+            .into());
         }
 
         let (tx, rx) = tokio::sync::mpsc::channel(128);

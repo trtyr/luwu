@@ -17,6 +17,7 @@ pub mod grep;
 pub mod write;
 pub mod web_fetch;
 pub mod memory_search;
+pub mod error;
 
 pub mod hashline;
 use luwu_core::Tool;

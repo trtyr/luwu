@@ -18,6 +18,7 @@ use luwu_core::{
     ContentPart, LlmEvent, LlmProvider, LlmRequest, LlmUsage, Message, Result, Role,
 };
 use reqwest::Client;
+use crate::error::{LlmError, truncate_body};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -88,14 +89,16 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| luwu_core::LuwuError::Llm(format!("Anthropic request failed: {e}")))?;
+            .map_err(LlmError::Http)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(luwu_core::LuwuError::Llm(format!(
-                "Anthropic API error {status}: {text}"
-            )));
+            return Err(LlmError::Status {
+                status: status.as_u16(),
+                body: truncate_body(&text, 500),
+            }
+            .into());
         }
 
         let (tx, rx) = tokio::sync::mpsc::channel(128);
@@ -124,11 +127,12 @@ async fn consume_stream(
         let sse_event = match result {
             Ok(e) => e,
             Err(e) => {
-                let _ = tx
-                    .send(Err(luwu_core::LuwuError::Llm(format!(
-                        "SSE stream error: {e}"
-                    ))))
-                    .await;
+                if let Err(send_err) = tx
+                    .send(Err(LlmError::Stream(format!("SSE stream error: {e}")).into()))
+                    .await
+                {
+                    tracing::warn!(%send_err, "Failed to send SSE error event");
+                }
                 break;
             }
         };

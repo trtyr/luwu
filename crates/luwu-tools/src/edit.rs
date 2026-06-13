@@ -447,7 +447,7 @@ fn find_resilient_match(
     }
 
     let count = matches.len();
-    let actual_old = matches.into_iter().next().unwrap();
+    let actual_old = matches.into_iter().next().expect("matches non-empty checked above");
     Some((actual_old, count))
 }
 

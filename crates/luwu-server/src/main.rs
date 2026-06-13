@@ -2,6 +2,7 @@
 
 mod api;
 mod config;
+mod error;
 
 use std::net::SocketAddr;
 
