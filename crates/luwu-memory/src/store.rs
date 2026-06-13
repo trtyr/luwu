@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 /// Four-layer memory store backed by the filesystem.
 pub struct MemoryStore {
     /// Root directory for all memory files.
+    #[allow(dead_code)]
     root: PathBuf,
     /// Global memory path.
     global_path: PathBuf,

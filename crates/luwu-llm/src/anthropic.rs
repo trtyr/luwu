@@ -18,7 +18,7 @@ use luwu_core::{
     ContentPart, LlmEvent, LlmProvider, LlmRequest, LlmUsage, Message, Result, Role,
 };
 use reqwest::Client;
-use crate::error::{LlmError, truncate_body};
+use crate::error::LlmError;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;

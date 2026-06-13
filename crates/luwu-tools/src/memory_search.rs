@@ -21,7 +21,7 @@ fn path_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(
         r#"(?:crates|src|tests|docs)/[^\s:'\")]+|[a-zA-Z_][a-zA-Z0-9_/]*\.(rs|toml|json|md|py)"#
-    ).unwrap())
+    ).expect("static path regex"))
 }
 
 fn expand_observation(store: &MemoryStore, index: usize) -> String {
@@ -114,13 +114,13 @@ impl Tool for MemorySearchTool {
             return Ok(ToolOutput::text(touched_files(&store)));
         }
 
-        let npath_re = RE_NPATH.get_or_init(|| Regex::new(r#"^#(\d+):path$"#).unwrap());
+        let npath_re = RE_NPATH.get_or_init(|| Regex::new(r#"^#(\d+):path$"#).expect("static npath regex"));
         if let Some(c) = npath_re.captures(q) {
             let idx: usize = c[1].parse().unwrap_or(0);
             return Ok(ToolOutput::text(drill_down(&store, &context.working_dir, idx)));
         }
 
-        let n_re = RE_N.get_or_init(|| Regex::new(r#"^#(\d+)$"#).unwrap());
+        let n_re = RE_N.get_or_init(|| Regex::new(r#"^#(\d+)$"#).expect("static n regex"));
         if let Some(c) = n_re.captures(q) {
             let idx: usize = c[1].parse().unwrap_or(0);
             return Ok(ToolOutput::text(expand_observation(&store, idx)));
