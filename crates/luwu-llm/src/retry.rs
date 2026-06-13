@@ -100,3 +100,56 @@ pub async fn send_with_retry(request: &RequestBuilder) -> Result<Response, LlmEr
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── is_retryable_status ──────────────────────────────
+
+    #[test]
+    fn retryable_statuses() {
+        for code in [429, 500, 502, 503, 504] {
+            assert!(is_retryable_status(code), "{code} should be retryable");
+        }
+    }
+
+    #[test]
+    fn non_retryable_statuses() {
+        for code in [200, 400, 401, 403, 404, 301, 201] {
+            assert!(!is_retryable_status(code), "{code} should NOT be retryable");
+        }
+    }
+
+    // ─── backoff_delay ────────────────────────────────────
+
+    #[test]
+    fn backoff_exponential_schedule() {
+        // attempt 1 → 1s, attempt 2 → 2s, attempt 3 → 4s (capped).
+        // jitter adds 0..500ms but as_secs() truncates, so secs are stable.
+        assert_eq!(backoff_delay(1, None).as_secs(), 1);
+        assert_eq!(backoff_delay(2, None).as_secs(), 2);
+        assert_eq!(backoff_delay(3, None).as_secs(), 4);
+    }
+
+    #[test]
+    fn backoff_caps_at_max() {
+        // Large attempt would be 1<<9 = 512s, should cap at 4s.
+        assert_eq!(backoff_delay(10, None).as_secs(), 4);
+    }
+
+    #[test]
+    fn backoff_respects_retry_after() {
+        let d = backoff_delay(1, Some(10));
+        assert_eq!(d.as_secs(), 10); // 10s base + 0..500ms jitter
+    }
+
+    // ─── jitter ───────────────────────────────────────────
+
+    #[test]
+    fn jitter_is_bounded() {
+        for _ in 0..200 {
+            let j = jitter_ms();
+            assert!(j < 500, "jitter {j} must be < 500");
+        }
+    }
+}

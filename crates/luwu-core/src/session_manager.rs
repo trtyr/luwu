@@ -388,3 +388,146 @@ impl Drop for RunningGuard {
         });
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // ─── CRUD ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_and_get() {
+        let mgr = SessionManager::new();
+        let session = mgr.create("test-model").await;
+        let got = mgr.get(&session.id).await;
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().data.model, "test-model");
+    }
+
+    #[tokio::test]
+    async fn list_returns_all_sessions() {
+        let mgr = SessionManager::new();
+        mgr.create("model-a").await;
+        mgr.create("model-b").await;
+        assert_eq!(mgr.list().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_session() {
+        let mgr = SessionManager::new();
+        let session = mgr.create("model").await;
+        assert!(mgr.delete(&session.id).await);
+        assert!(mgr.get(&session.id).await.is_none());
+        assert!(mgr.list().await.is_empty());
+    }
+
+    // ─── try_set_running (TOCTOU fix) ─────────────────────
+
+    #[tokio::test]
+    async fn try_set_running_marks_session_running() {
+        let mgr = SessionManager::new();
+        let session = mgr.create("model").await;
+        assert!(mgr.try_set_running(&session.id).await.is_ok());
+        assert!(mgr.get(&session.id).await.unwrap().is_running);
+    }
+
+    #[tokio::test]
+    async fn try_set_running_rejects_concurrent() {
+        let mgr = SessionManager::new();
+        let session = mgr.create("model").await;
+        mgr.try_set_running(&session.id).await.unwrap();
+        let err = mgr.try_set_running(&session.id).await.unwrap_err();
+        assert_eq!(err, TrySetRunningError::AlreadyRunning);
+    }
+
+    #[tokio::test]
+    async fn try_set_running_missing_session() {
+        let mgr = SessionManager::new();
+        let err = mgr.try_set_running("nope").await.unwrap_err();
+        assert_eq!(err, TrySetRunningError::NotFound);
+    }
+
+    // ─── RunningGuard RAII ────────────────────────────────
+
+    #[tokio::test]
+    async fn running_guard_resets_on_drop() {
+        let mgr = SessionManager::new();
+        let session = mgr.create("model").await;
+        mgr.try_set_running(&session.id).await.unwrap();
+        {
+            let _guard = RunningGuard::new(mgr.clone(), &session.id);
+        }
+        // Drop spawns a background task — give it a tick.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!mgr.get(&session.id).await.unwrap().is_running);
+    }
+
+    // ─── Cancel ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cancel_running_session_succeeds() {
+        let mgr = SessionManager::new();
+        let session = mgr.create("model").await;
+        mgr.try_set_running(&session.id).await.unwrap();
+        assert!(mgr.cancel(&session.id).await);
+    }
+
+    #[tokio::test]
+    async fn cancel_idle_session_fails() {
+        let mgr = SessionManager::new();
+        let session = mgr.create("model").await;
+        assert!(!mgr.cancel(&session.id).await);
+    }
+
+    // ─── append_messages ──────────────────────────────────
+
+    #[tokio::test]
+    async fn append_messages_grows_history() {
+        let mgr = SessionManager::new();
+        let session = mgr.create("model").await;
+        assert!(
+            mgr.append_messages(&session.id, vec![Message::user("hi")])
+                .await
+        );
+        assert_eq!(mgr.get(&session.id).await.unwrap().data.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn append_messages_missing_session() {
+        let mgr = SessionManager::new();
+        assert!(
+            !mgr.append_messages("ghost", vec![Message::user("hi")])
+                .await
+        );
+    }
+
+    // ─── Persistence round-trip ───────────────────────────
+
+    #[tokio::test]
+    async fn persistence_roundtrip() {
+        let dir = std::env::temp_dir().join(format!(
+            "luwu-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        let mgr = SessionManager::with_persistence(&dir).unwrap();
+
+        let session = mgr.create("persist-model").await;
+        mgr.append_messages(&session.id, vec![Message::user("hello")])
+            .await;
+
+        // Fresh manager loads from the same directory.
+        let mgr2 = SessionManager::with_persistence(&dir).unwrap();
+        assert_eq!(mgr2.load_from_disk().await, 1);
+
+        let loaded = mgr2.get(&session.id).await.unwrap();
+        assert_eq!(loaded.data.model, "persist-model");
+        assert_eq!(loaded.data.messages.len(), 1);
+        assert!(!loaded.is_running); // runtime state not persisted
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

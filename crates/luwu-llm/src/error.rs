@@ -49,3 +49,60 @@ pub fn truncate_body(body: &str, max: usize) -> String {
         format!("{}…", &body[..max])
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── truncate_body ────────────────────────────────────
+
+    #[test]
+    fn truncate_under_limit_unchanged() {
+        assert_eq!(truncate_body("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_at_exact_limit() {
+        assert_eq!(truncate_body("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_over_limit_adds_ellipsis() {
+        assert_eq!(truncate_body("hello world", 5), "hello…");
+    }
+
+    #[test]
+    fn truncate_empty_string() {
+        assert_eq!(truncate_body("", 100), "");
+    }
+
+    // ─── LlmError Display ─────────────────────────────────
+
+    #[test]
+    fn error_display_formats() {
+        assert_eq!(LlmError::Timeout.to_string(), "Request timed out");
+        assert_eq!(
+            LlmError::Auth("bad key".into()).to_string(),
+            "Authentication failed: bad key"
+        );
+        assert_eq!(
+            LlmError::Stream("parse failed".into()).to_string(),
+            "Stream error: parse failed"
+        );
+        assert_eq!(
+            LlmError::Status {
+                status: 429,
+                body: "slow down".into()
+            }
+            .to_string(),
+            "API returned status 429: slow down"
+        );
+    }
+
+    // ─── From<LlmError> for LuwuError ─────────────────────
+
+    #[test]
+    fn converts_to_luwu_error() {
+        let err: luwu_core::LuwuError = LlmError::Timeout.into();
+        assert!(err.to_string().contains("Request timed out"));
+    }
+}
