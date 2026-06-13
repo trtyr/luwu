@@ -16,6 +16,7 @@
 //! Everything else is a type that these traits produce or consume.
 
 pub mod engine;
+pub mod cycle;
 pub mod error;
 pub mod event;
 pub mod llm;
@@ -28,6 +29,7 @@ pub mod tool_registry;
 pub mod prompt;
 
 // Re-export the core types for convenience.
+pub use cycle::{CycleAction, CycleState};
 pub use engine::{CancelToken, TurnEngine, TurnResult};
 pub use error::{LuwuError, Result};
 pub use event::{Event, EventBus, SessionId, TurnEvent, TurnId};
@@ -38,4 +40,4 @@ pub use session_manager::{ManagedSession, SessionManager, SessionSummary};
 pub use storage::Storage;
 pub use tool::{Tool, ToolContext, ToolOutput};
 pub use tool_registry::ToolRegistry;
-pub use prompt::{default_system_prompt, system_prompt_with_tools};
+pub use prompt::{default_system_prompt, system_prompt_with_tools, writer_system_prompt};

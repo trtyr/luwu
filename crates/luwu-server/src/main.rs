@@ -46,6 +46,7 @@ async fn main() {
     let state = AppState {
         config,
         sessions: SessionManager::new(),
+        working_dir: std::path::PathBuf::from("."),
     };
     let app = api::router(state);
 

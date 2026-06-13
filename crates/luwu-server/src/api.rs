@@ -8,8 +8,13 @@
 //! - `POST /v1/sessions`                    — Create session
 //! - `GET  /v1/sessions/{id}`               — Get session info
 //! - `DELETE /v1/sessions/{id}`             — Delete session
-//! - `POST /v1/sessions/{id}/chat`          — Agent chat with full event stream (SSE)
+//! - `POST /v1/sessions/{id}/chat`          — Agent chat (full event stream + cycle management)
 //! - `POST /v1/sessions/{id}/cancel`        — Cancel running turn
+//! - `GET  /v1/sessions/{id}/checkpoint`    — Get latest checkpoint
+//! - `GET  /v1/sessions/{id}/history`       — Search session history
+//! - `POST /v1/sessions/{id}/cancel`        — Cancel running turn
+//! - `GET  /v1/sessions/{id}/checkpoint`    — Get latest checkpoint
+//! - `GET  /v1/sessions/{id}/history`       — Search session history
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -23,11 +28,13 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use luwu_core::{
+    LlmProvider,
     EventBus, Message, SessionManager, SessionSummary, ToolRegistry, TurnEngine,
-    TurnEvent,
+    TurnEvent, CycleState, CycleAction,
 };
 use luwu_llm::openai::OpenAiProvider;
 use luwu_tools;
+use luwu_memory::MemoryStore;
 
 use crate::config::Config;
 
@@ -47,6 +54,7 @@ fn builtin_tool_registry() -> ToolRegistry {
 pub struct AppState {
     pub config: Config,
     pub sessions: SessionManager,
+    pub working_dir: std::path::PathBuf,
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +220,15 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/sessions/{id}/cancel",
             axum::routing::post(cancel_turn),
+        )
+        // Memory endpoints.
+        .route(
+            "/v1/sessions/{id}/checkpoint",
+            axum::routing::get(get_checkpoint),
+        )
+        .route(
+            "/v1/sessions/{id}/history",
+            axum::routing::get(search_history),
         )
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
@@ -592,10 +609,21 @@ async fn agent_chat(
 
     // Build engine.
     let provider = OpenAiProvider::with_base_url(&resolved.api_key, &resolved.base_url);
+    let provider_arc: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(provider);
     let tools = builtin_tool_registry();
     let events = EventBus::new(256);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let engine = TurnEngine::new(std::sync::Arc::new(provider), tools, events, working_dir);
+    let engine = TurnEngine::new(provider_arc.clone(), tools, events, working_dir.clone());
+
+    // Memory store and cycle state.
+    let luwu_home = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".luwu");
+    let memory = std::sync::Arc::new(
+        MemoryStore::new(&luwu_home, &state.working_dir, &id)
+    );
+    let mut cycle = CycleState::default();
+    let estimator = luwu_memory::TokenEstimator::default();
 
     let model = session.data.model.clone();
     let messages = session.data.messages.clone();
@@ -603,42 +631,92 @@ async fn agent_chat(
     let sessions = state.sessions.clone();
     let id_clone = id.clone();
 
+    // Track writer task for rebuild synchronization.
+    let mut writer_handle: Option<tokio::task::JoinHandle<()>> = None;
+
     // Start streaming.
     let event_rx = engine
         .run_stream(session_id, model, messages, req.message, Some(cancel_token))
         .await;
 
     if req.stream {
-        // SSE — forward ALL TurnEvents as JSON.
+        // SSE — forward ALL TurnEvents as JSON, with cycle management.
         let stream = async_stream::stream! {
             let mut rx = event_rx;
-            let _final_messages: Vec<Message> = Vec::new();
             let mut _assistant_text = String::new();
 
             while let Some(event) = rx.recv().await {
-                // Serialize the event as-is — client gets full agent visibility.
+                // Serialize the event.
                 let json = serde_json::to_string(&event).unwrap();
                 yield Ok::<_, Infallible>(SseEvent::default().data(json));
 
-                // Track state for session update.
-                match &event {
-                    TurnEvent::Done {
-                        assistant_text: text,
-                        ..
-                    } => {
-                        _assistant_text = text.clone();
+                // Track tokens and cycle state.
+                let event_tokens = match &event {
+                    TurnEvent::TextDelta { delta } => estimator.estimate(delta),
+                    TurnEvent::ToolCompleted { output, .. } => estimator.estimate(output),
+                    TurnEvent::Done { assistant_text, .. } => {
+                        _assistant_text = assistant_text.clone();
                         break;
                     }
-                    TurnEvent::Cancelled | TurnEvent::Error { .. } => {
-                        break;
+                    TurnEvent::Cancelled | TurnEvent::Error { .. } => break,
+                    _ => 0,
+                };
+
+                if event_tokens > 0 {
+                    cycle.add_tokens(event_tokens);
+
+                    match cycle.check() {
+                        CycleAction::Checkpoint => {
+                            let pct = cycle.usage_pct();
+                            cycle.mark_checkpoint(pct);
+
+                            // Spawn async writer (concurrent, non-blocking).
+                            let writer_provider = provider_arc.clone();
+                            let writer_memory = memory.clone();
+                            let writer_messages: Vec<Message> = vec![]; // TODO: get actual messages
+                            let resolved_base = resolved.base_url.clone();
+                            let resolved_key = resolved.api_key.clone();
+
+                            writer_handle = Some(tokio::spawn(async move {
+                                run_checkpoint_writer(
+                                    &resolved_key,
+                                    &resolved_base,
+                                    &writer_messages,
+                                    &writer_memory,
+                                ).await.ok();
+                            }));
+
+                            // Emit checkpoint event.
+                            let cp_event = serde_json::json!({
+                                "type": "checkpoint",
+                                "cycle": cycle.cycle_index,
+                                "usage_pct": pct,
+                            });
+                            yield Ok(SseEvent::default().data(cp_event.to_string()));
+                        }
+                        CycleAction::Rebuild => {
+                            // Wait for writer to finish before rebuilding.
+                            if let Some(h) = writer_handle.take() {
+                                h.await.ok();
+                            }
+
+                            // Emit rebuild event.
+                            let rb_event = serde_json::json!({
+                                "type": "rebuild",
+                                "cycle": cycle.cycle_index,
+                            });
+                            yield Ok(SseEvent::default().data(rb_event.to_string()));
+
+                            cycle.reset_cycle();
+                            // TODO: inject rebuild context into next LLM call.
+                            // For now, just reset the cycle counter.
+                        }
+                        CycleAction::Continue => {}
                     }
-                    _ => {}
                 }
             }
 
             // Update session.
-            // For now, we just mark it as not running.
-            // TODO: properly update messages in session.
             let _ = sessions.set_running(&id_clone, false).await;
         };
 
@@ -649,7 +727,6 @@ async fn agent_chat(
         sse.into_response()
     } else {
         // Non-streaming — collect all events and return the final result.
-        // We still use the streaming API internally, just buffer everything.
         let stream = async_stream::stream! {
             let mut rx = event_rx;
             let mut collected_text = String::new();
@@ -710,6 +787,65 @@ async fn agent_chat(
     }
 }
 
+/// Run the checkpoint Writer — an independent LLM call that extracts
+/// structured state from conversation history.
+async fn run_checkpoint_writer(
+    api_key: &str,
+    base_url: &str,
+    _messages: &[Message],
+    memory: &MemoryStore,
+) -> Result<(), String> {
+    use luwu_core::writer_system_prompt;
+
+    let client: reqwest::Client = reqwest::Client::new();
+    let system_prompt = writer_system_prompt();
+
+    // For now, use the latest checkpoint as input to the writer.
+    // In a full implementation, this would serialize the full conversation history.
+    let current_checkpoint = memory.read_checkpoint_raw();
+    let user_content = if current_checkpoint.is_empty() {
+        "（新会话，尚无历史记录）".to_string()
+    } else {
+        format!("以下是当前 checkpoint，请增量更新：\n\n{}", current_checkpoint)
+    };
+
+    let body = serde_json::json!({
+        "model": "MiniMax-M3",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ],
+        "temperature": 0.1,
+        "max_tokens": 4096
+    });
+
+    let resp = client
+        .post(format!("{}/chat/completions", base_url))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Writer request failed: {e}"))?;
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Writer parse failed: {e}"))?;
+
+    let output = data["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("");
+
+    if !output.is_empty() {
+        memory
+            .write_checkpoint_raw(output)
+            .map_err(|e| format!("Writer write failed: {e}"))?;
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Handlers — Cancel
 // ---------------------------------------------------------------------------
@@ -726,5 +862,98 @@ async fn cancel_turn(
             "Session not found or not running",
         )
             .into_response()
+    }
+}
+
+// ── Memory API Handlers ────────────────────────────────────────
+
+/// GET /v1/sessions/{id}/checkpoint — get latest checkpoint.
+async fn get_checkpoint(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let luwu_home = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".luwu");
+    let memory = MemoryStore::new(&luwu_home, &state.working_dir, &id);
+
+    match memory.read_checkpoint() {
+        Some(cp) => {
+            let json = serde_json::json!({
+                "session_id": id,
+                "checkpoint": cp,
+                "raw": memory.read_checkpoint_raw(),
+            });
+            Json(json).into_response()
+        }
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            "No checkpoint found for this session",
+        )
+            .into_response(),
+    }
+}
+
+/// GET /v1/sessions/{id}/history?q=keyword — search session history.
+async fn search_history(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let luwu_home = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".luwu");
+    let memory = MemoryStore::new(&luwu_home, &state.working_dir, &id);
+
+    let query = params.get("q").map(|s| s.as_str()).unwrap_or("");
+    let limit: usize = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
+
+    if query.is_empty() {
+        // Return recent history.
+        match memory.history_log() {
+            Ok(log) => match log.read_all() {
+                Ok(entries) => {
+                    let json = serde_json::json!({
+                        "session_id": id,
+                        "entries": entries.iter().rev().take(limit).collect::<Vec<_>>(),
+                        "total": entries.len(),
+                    });
+                    return Json(json).into_response();
+                }
+                Err(e) => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        e.to_string(),
+                    )
+                        .into_response();
+                }
+            },
+            Err(e) => {
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    e.to_string(),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    match memory.search_history(query, limit) {
+        Ok(entries) => {
+            let json = serde_json::json!({
+                "session_id": id,
+                "query": query,
+                "entries": entries,
+            });
+            Json(json).into_response()
+        }
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
+        )
+            .into_response(),
     }
 }
