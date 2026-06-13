@@ -8,6 +8,7 @@ import { MessageList } from './components/MessageList.js';
 import { StatusLine } from './components/StatusLine.js';
 import { PromptInput } from './components/PromptInput.js';
 import { Spinner } from './components/Spinner.js';
+import { Welcome } from './components/Welcome.js';
 import type { DisplayMessage, ToolCallInfo, Phase, StreamEvent } from './core/types.js';
 import { isBusy } from './core/state.js';
 import { useCommands } from './hooks/useCommands.js';
