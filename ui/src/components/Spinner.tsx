@@ -88,11 +88,14 @@ export function Spinner({ phase, verb }: Props) {
 
   if (phase !== 'thinking' && thinkingStatus === null) return null;
 
+  // Random completion verb (from Claude Code turnCompletionVerbs.ts)
+  const completionVerb = pick(['Baked', 'Brewed', 'Churned', 'Cogitated', 'Cooked', 'Crunched', 'Sautéed', 'Worked']);
+
   if (phase !== 'thinking' && typeof thinkingStatus === 'number') {
     return (
       <Box marginLeft={2}>
         <Text color={theme.claude}>✻ </Text>
-        <Text color={theme.inactive}>Thought for </Text>
+        <Text color={theme.inactive}>{completionVerb} for </Text>
         <Text color={theme.text} bold>{(thinkingStatus / 1000).toFixed(1)}s</Text>
       </Box>
     );
