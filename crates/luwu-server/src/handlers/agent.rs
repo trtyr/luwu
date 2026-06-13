@@ -9,13 +9,12 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, Sse};
 
 use luwu_core::{
-    CycleAction, CycleState, EventBus, LlmProvider, RunningGuard, TrySetRunningError, TurnEngine,
+    CycleAction, CycleState, EventBus, RunningGuard, TrySetRunningError, TurnEngine,
     TurnEvent,
 };
-use luwu_llm::openai::OpenAiProvider;
 use luwu_memory::{CorrectionDetector, CorrectionPattern, MemoryStore, compile_summary};
 
-use crate::app::{AppState, builtin_tool_registry};
+use crate::app::{AppState, builtin_tool_registry, create_provider};
 use crate::handlers::workers::{
     run_consolidation_writer, run_observer_worker, run_reflector_worker,
 };
@@ -63,13 +62,8 @@ pub async fn agent_chat(
         }
     };
 
-    // Build engine.
-    let provider = OpenAiProvider::with_client(
-        &resolved.api_key,
-        &resolved.base_url,
-        state.http_client.clone(),
-    );
-    let provider_arc: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(provider);
+    // Build engine — provider selected by config (factory pattern).
+    let provider_arc = create_provider(&resolved, state.http_client.clone());
     let tools = builtin_tool_registry();
     let events = EventBus::new(256);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));

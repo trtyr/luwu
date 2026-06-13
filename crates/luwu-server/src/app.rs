@@ -9,9 +9,11 @@ use axum::Router;
 use tokio::task::JoinSet;
 use tower_http::cors::CorsLayer;
 
-use luwu_core::{SessionManager, ToolRegistry};
+use luwu_core::{LlmProvider, SessionManager, ToolRegistry};
+use luwu_llm::anthropic::AnthropicProvider;
+use luwu_llm::openai::OpenAiProvider;
 
-use crate::config::Config;
+use crate::config::{Config, ResolvedConfig};
 use crate::handlers;
 
 /// Shared application state accessible to all request handlers.
@@ -43,6 +45,26 @@ pub fn builtin_tool_registry() -> ToolRegistry {
         registry.register(tool);
     }
     registry
+}
+
+/// Provider factory — selects the correct LLM provider based on config.
+///
+/// Matching is by provider name (the config key):
+/// - `"anthropic"` → AnthropicProvider (Claude Messages API)
+/// - Everything else → OpenAiProvider (OpenAI-compatible: OpenAI, MiniMax, DeepSeek, etc.)
+pub fn create_provider(resolved: &ResolvedConfig, http_client: reqwest::Client) -> Arc<dyn LlmProvider> {
+    match resolved.provider_name.as_str() {
+        "anthropic" => Arc::new(AnthropicProvider::with_client(
+            &resolved.api_key,
+            &resolved.base_url,
+            http_client,
+        )),
+        _ => Arc::new(OpenAiProvider::with_client(
+            &resolved.api_key,
+            &resolved.base_url,
+            http_client,
+        )),
+    }
 }
 
 /// Build the axum router with all routes registered.

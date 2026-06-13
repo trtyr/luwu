@@ -188,7 +188,7 @@ async fn execute_anchor_edit(
 
     // Verify anchor.
     let old_line = hashline::verify_anchor(content, line_num, expected_hash)
-        .map_err(|e| luwu_core::LuwuError::Tool(e))?;
+        .map_err(luwu_core::LuwuError::Tool)?;
 
     let total_lines = content.lines().count();
 
