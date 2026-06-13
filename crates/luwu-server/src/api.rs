@@ -30,7 +30,7 @@ use tower_http::cors::CorsLayer;
 use luwu_core::{
     message::Role,
     LlmProvider,
-    EventBus, Message, SessionManager, SessionSummary, ToolRegistry, TurnEngine,
+    EventBus, Message, SessionManager, SessionSummary, TrySetRunningError, ToolRegistry, TurnEngine,
     TurnEvent, CycleState, CycleAction,
 };
 use luwu_llm::openai::OpenAiProvider;
@@ -638,10 +638,26 @@ async fn agent_chat(
     Path(id): Path<String>,
     Json(req): Json<AgentChatRequest>,
 ) -> axum::response::Response {
-    // Get session first to determine provider.
+    // Atomically check-and-set running state (eliminates TOCTOU race).
+    let cancel_token = match state.sessions.try_set_running(&id).await {
+        Ok(t) => t,
+        Err(TrySetRunningError::AlreadyRunning) => {
+            return (
+                axum::http::StatusCode::CONFLICT,
+                "Session already has a running turn",
+            )
+                .into_response();
+        }
+        Err(TrySetRunningError::NotFound) => {
+            return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
+        }
+    };
+
+    // Get session for provider resolution.
     let session = match state.sessions.get(&id).await {
         Some(s) => s,
         None => {
+            let _ = state.sessions.set_running(&id, false).await;
             return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
         }
     };
@@ -650,29 +666,10 @@ async fn agent_chat(
     let resolved = match state.config.resolve(session.data.provider.as_deref()) {
         Ok(r) => r,
         Err(e) => {
+            let _ = state.sessions.set_running(&id, false).await;
             return (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 e.to_string(),
-            )
-                .into_response();
-        }
-    };
-
-    if session.is_running {
-        return (
-            axum::http::StatusCode::CONFLICT,
-            "Session already has a running turn",
-        )
-            .into_response();
-    }
-
-    // Mark session as running and get cancel token.
-    let cancel_token = match state.sessions.set_running(&id, true).await {
-        Some(t) => t,
-        None => {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to set running state",
             )
                 .into_response();
         }
@@ -719,7 +716,7 @@ async fn agent_chat(
             let entry = format!("[{}] {}", label, correction.full_message);
             let mem_c = memory.clone();
             tokio::spawn(async move {
-                let _ = mem_c.append_correction(&entry);
+                if let Err(e) = mem_c.append_correction(&entry) { tracing::warn!(%e, "Failed to save correction"); }
             });
             tracing::info!("Correction detected and saved");
         }
@@ -771,7 +768,7 @@ async fn agent_chat(
                                 let np = n.path.clone();
                                 let ft = n.file_type;
                                 tokio::spawn(async move {
-                                    run_consolidation_writer(&rk2, &rb2, &content, &np, ft).await.ok();
+                                    if let Err(e) = run_consolidation_writer(&rk2, &rb2, &content, &np, ft).await { tracing::warn!(%e, "Consolidation writer failed"); }
                                 });
                             }
                             let con_evt = serde_json::json!({
@@ -788,7 +785,7 @@ async fn agent_chat(
 
                             // Deterministic compaction — zero LLM cost.
                             let det_summary = compile_summary(&messages_for_workers, &working_dir);
-                            memory.write_checkpoint_raw(&det_summary.to_markdown()).ok();
+                            if let Err(e) = memory.write_checkpoint_raw(&det_summary.to_markdown()) { tracing::warn!(%e, "Failed to write checkpoint"); }
 
                             // Spawn Observer worker.
                             let _wm = memory.clone();
@@ -797,7 +794,7 @@ async fn agent_chat(
                             let obs_msgs = messages_for_workers.clone();
 
                             writer_handle = Some(tokio::spawn(async move {
-                                run_observer_worker(&rk, &rb, &obs_msgs, &_wm).await.ok();
+                                if let Err(e) = run_observer_worker(&rk, &rb, &obs_msgs, &_wm).await { tracing::warn!(%e, "Observer worker failed"); }
                             }));
 
                             let tc_event = serde_json::json!({
@@ -826,16 +823,16 @@ async fn agent_chat(
 
                         // Deterministic compaction — zero LLM cost.
                         let det_summary = compile_summary(&messages_for_workers, &working_dir);
-                        memory.write_checkpoint_raw(&det_summary.to_markdown()).ok();
+                        if let Err(e) = memory.write_checkpoint_raw(&det_summary.to_markdown()) { tracing::warn!(%e, "Failed to write checkpoint"); }
 
                         // Spawn Observer worker.
                         writer_handle = Some(tokio::spawn(async move {
-                            run_observer_worker(
+                            if let Err(e) = run_observer_worker(
                                 &resolved_key,
                                 &resolved_base,
                                 &obs_msgs,
                                 &_writer_memory,
-                            ).await.ok();
+                            ).await { tracing::warn!(%e, "Observer worker failed"); }
                         }));
 
                         let cp_event = serde_json::json!({
@@ -848,19 +845,19 @@ async fn agent_chat(
                     CycleAction::Rebuild => {
                         // Await Observer if still running.
                         if let Some(h) = writer_handle.take() {
-                            h.await.ok();
+                            if let Err(e) = h.await { tracing::warn!(%e, "Observer task panicked"); }
                         }
 
                         // Spawn Reflector to synthesize observations into reflections.
                         let _refl_memory = memory.clone();
                         let _refl_base = resolved.base_url.clone();
                         let _refl_key = resolved.api_key.clone();
-                        let _ = tokio::spawn(async move {
-                            run_reflector_worker(
+                        tokio::spawn(async move {
+                            if let Err(e) = run_reflector_worker(
                                 &_refl_key,
                                 &_refl_base,
                                 &_refl_memory,
-                            ).await.ok();
+                            ).await { tracing::warn!(%e, "Reflector worker failed"); }
                         });
 
                         let rb_event = serde_json::json!({
@@ -956,7 +953,11 @@ async fn run_consolidation_writer(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use serde_json::json;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("failed to build worker HTTP client");
     let body = json!({
         "model": "MiniMax-M3",
         "temperature": 0.1,
@@ -1005,7 +1006,11 @@ async fn run_checkpoint_writer(
 ) -> Result<(), String> {
     use luwu_core::writer_system_prompt;
 
-    let client: reqwest::Client = reqwest::Client::new();
+    let client: reqwest::Client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("failed to build worker HTTP client");
     let system_prompt = writer_system_prompt();
 
     // For now, use the latest checkpoint as input to the writer.
@@ -1099,7 +1104,11 @@ async fn run_observer_worker(
         return Ok(0);
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("failed to build worker HTTP client");
     let body = serde_json::json!({
         "model": "MiniMax-M3",
         "messages": [
@@ -1144,7 +1153,7 @@ async fn run_observer_worker(
             let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
             if !content.is_empty() {
                 let obs = Observation::new(priority, category, content);
-                memory.append_observation(&obs).ok();
+                if let Err(e) = memory.append_observation(&obs) { tracing::warn!(%e, "Failed to append observation"); }
                 count += 1;
             }
         }
@@ -1171,7 +1180,11 @@ async fn run_reflector_worker(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("failed to build worker HTTP client");
     let body = serde_json::json!({
         "model": "MiniMax-M3",
         "messages": [
@@ -1219,7 +1232,7 @@ async fn run_reflector_worker(
                 .unwrap_or_default();
             if !content.is_empty() {
                 let refl = Reflection::new(content, source_ids);
-                memory.append_reflection(&refl).ok();
+                if let Err(e) = memory.append_reflection(&refl) { tracing::warn!(%e, "Failed to append reflection"); }
                 count += 1;
             }
         }

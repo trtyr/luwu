@@ -45,6 +45,12 @@ pub struct ManagedSession {
     pub is_running: bool,
 }
 
+/// Error returned by [`SessionManager::try_set_running`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrySetRunningError {
+    NotFound,
+    AlreadyRunning,
+}
 /// Server-side session manager with file-based persistence.
 #[derive(Debug, Clone)]
 pub struct SessionManager {
@@ -235,6 +241,21 @@ impl SessionManager {
         } else {
             None
         }
+    }
+
+    /// Atomically check if running and set to running if not.
+    ///
+    /// Combines the check-and-set into one lock acquisition,
+    /// eliminating the TOCTOU race between `get()` and `set_running()`.
+    pub async fn try_set_running(&self, id: &str) -> Result<CancelToken, TrySetRunningError> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions.get_mut(id).ok_or(TrySetRunningError::NotFound)?;
+        if session.is_running {
+            return Err(TrySetRunningError::AlreadyRunning);
+        }
+        session.is_running = true;
+        session.cancel_token = CancelToken::new();
+        Ok(session.cancel_token.clone())
     }
 
     /// Cancel the currently running turn for a session.

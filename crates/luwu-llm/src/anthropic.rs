@@ -45,7 +45,11 @@ impl AnthropicProvider {
     /// Create a provider with a custom base URL.
     pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("failed to build Anthropic HTTP client"),
             api_key: api_key.into(),
             base_url: base_url.into(),
         }
