@@ -623,7 +623,6 @@ async fn agent_chat(
         MemoryStore::new(&luwu_home, &state.working_dir, &id)
     );
     let mut cycle = CycleState::default();
-    let estimator = luwu_memory::TokenEstimator::default();
 
     let model = session.data.model.clone();
     let messages = session.data.messages.clone();
@@ -651,68 +650,58 @@ async fn agent_chat(
                 yield Ok::<_, Infallible>(SseEvent::default().data(json));
 
                 // Track tokens and cycle state.
-                let event_tokens = match &event {
-                    TurnEvent::TextDelta { delta } => estimator.estimate(delta),
-                    TurnEvent::ToolCompleted { output, .. } => estimator.estimate(output),
-                    TurnEvent::Done { assistant_text, .. } => {
+                match &event {
+                    TurnEvent::Done { assistant_text, usage, .. } => {
                         _assistant_text = assistant_text.clone();
+                        // Feed precise usage from LLM API into cycle.
+                        cycle.add_tokens(usage.total_tokens as usize);
                         break;
                     }
                     TurnEvent::Cancelled | TurnEvent::Error { .. } => break,
-                    _ => 0,
-                };
+                    _ => {}
+                }
 
-                if event_tokens > 0 {
-                    cycle.add_tokens(event_tokens);
+                // Cycle checkpoint/rebuild check is done per LLM call (not per event).
+                // Cycle checkpoint/rebuild after each LLM call.
+                match cycle.check() {
+                    CycleAction::Checkpoint => {
+                        let pct = cycle.usage_pct();
+                        cycle.mark_checkpoint(pct);
 
-                    match cycle.check() {
-                        CycleAction::Checkpoint => {
-                            let pct = cycle.usage_pct();
-                            cycle.mark_checkpoint(pct);
+                        let _writer_memory = memory.clone();
+                        let resolved_base = resolved.base_url.clone();
+                        let resolved_key = resolved.api_key.clone();
 
-                            // Spawn async writer (concurrent, non-blocking).
-                            let writer_provider = provider_arc.clone();
-                            let writer_memory = memory.clone();
-                            let writer_messages: Vec<Message> = vec![]; // TODO: get actual messages
-                            let resolved_base = resolved.base_url.clone();
-                            let resolved_key = resolved.api_key.clone();
+                        writer_handle = Some(tokio::spawn(async move {
+                            run_checkpoint_writer(
+                                &resolved_key,
+                                &resolved_base,
+                                &[],
+                                &_writer_memory,
+                            ).await.ok();
+                        }));
 
-                            writer_handle = Some(tokio::spawn(async move {
-                                run_checkpoint_writer(
-                                    &resolved_key,
-                                    &resolved_base,
-                                    &writer_messages,
-                                    &writer_memory,
-                                ).await.ok();
-                            }));
-
-                            // Emit checkpoint event.
-                            let cp_event = serde_json::json!({
-                                "type": "checkpoint",
-                                "cycle": cycle.cycle_index,
-                                "usage_pct": pct,
-                            });
-                            yield Ok(SseEvent::default().data(cp_event.to_string()));
-                        }
-                        CycleAction::Rebuild => {
-                            // Wait for writer to finish before rebuilding.
-                            if let Some(h) = writer_handle.take() {
-                                h.await.ok();
-                            }
-
-                            // Emit rebuild event.
-                            let rb_event = serde_json::json!({
-                                "type": "rebuild",
-                                "cycle": cycle.cycle_index,
-                            });
-                            yield Ok(SseEvent::default().data(rb_event.to_string()));
-
-                            cycle.reset_cycle();
-                            // TODO: inject rebuild context into next LLM call.
-                            // For now, just reset the cycle counter.
-                        }
-                        CycleAction::Continue => {}
+                        let cp_event = serde_json::json!({
+                            "type": "checkpoint",
+                            "cycle": cycle.cycle_index,
+                            "usage_pct": pct,
+                        });
+                        yield Ok(SseEvent::default().data(cp_event.to_string()));
                     }
+                    CycleAction::Rebuild => {
+                        if let Some(h) = writer_handle.take() {
+                            h.await.ok();
+                        }
+
+                        let rb_event = serde_json::json!({
+                            "type": "rebuild",
+                            "cycle": cycle.cycle_index,
+                        });
+                        yield Ok(SseEvent::default().data(rb_event.to_string()));
+
+                        cycle.reset_cycle();
+                    }
+                    CycleAction::Continue => {}
                 }
             }
 

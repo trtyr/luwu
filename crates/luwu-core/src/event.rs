@@ -167,6 +167,7 @@ pub enum TurnEvent {
         assistant_text: String,
         llm_calls: u32,
         tool_calls: u32,
+        usage: crate::llm::LlmUsage,
     },
 
     /// The turn was cancelled by the user.

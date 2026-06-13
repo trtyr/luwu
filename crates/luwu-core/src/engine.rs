@@ -349,6 +349,7 @@ impl TurnEngine {
             let mut llm_calls = 0u32;
             let mut tool_calls_count = 0u32;
             let mut iteration = 0u32;
+            let mut total_usage = crate::llm::LlmUsage::default();
 
             loop {
                 // Check cancellation.
@@ -442,8 +443,11 @@ impl TurnEngine {
                             }
                         }
 
-                        LlmEvent::Done(_usage) => {
-                            // Stream finished for this iteration.
+                        LlmEvent::Done(usage) => {
+                            // Accumulate usage across iterations.
+                            total_usage.prompt_tokens += usage.prompt_tokens;
+                            total_usage.completion_tokens += usage.completion_tokens;
+                            total_usage.total_tokens += usage.total_tokens;
                         }
 
                         LlmEvent::Error(msg) => {
@@ -500,6 +504,7 @@ impl TurnEngine {
                         assistant_text: assistant_text.clone(),
                         llm_calls,
                         tool_calls: tool_calls_count,
+                        usage: total_usage.clone(),
                     }).await;
                     break;
                 }
@@ -579,7 +584,7 @@ impl TurnEngine {
             events.publish(Event::TurnCompleted {
                 session_id: session_id_clone,
                 turn_id,
-                usage: crate::llm::LlmUsage::default(),
+                usage: total_usage,
             });
         });
 
