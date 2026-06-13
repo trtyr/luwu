@@ -41,8 +41,9 @@ describe('LAYOUT constants', () => {
     expect(LAYOUT.RESPONSE_INDENT).toBe('  ⎿  ');
   });
 
-  test('ASSISTANT_DOT is ●', () => {
-    expect(LAYOUT.ASSISTANT_DOT).toBe('●');
+  test('ASSISTANT_DOT is platform-correct circle', () => {
+    const expected = process.platform === 'darwin' ? '⏺' : '●';
+    expect(LAYOUT.ASSISTANT_DOT).toBe(expected);
   });
 
   test('DOT_MIN_WIDTH is 2', () => {

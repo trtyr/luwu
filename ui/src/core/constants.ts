@@ -28,7 +28,7 @@ export const LAYOUT = {
   /** Indent for MessageResponse: "  ⎿  " = 6 chars */
   RESPONSE_INDENT: '  ⎿  ',
   /** BLACK_CIRCLE for assistant prefix */
-  ASSISTANT_DOT: '●',
+  ASSISTANT_DOT: process.platform === 'darwin' ? '⏺' : '●',
   /** minWidth for the dot column */
   DOT_MIN_WIDTH: 2,
   /** Max display chars for user message before truncation */
