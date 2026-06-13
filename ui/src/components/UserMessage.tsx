@@ -1,22 +1,22 @@
-// components/UserMessage.tsx — background color via ANSI escape, NO prefix symbol
+// UserMessage — background color via Box backgroundColor prop (runtime supported by Ink v5)
 import React from 'react';
 import { Box, Text } from 'ink';
-import { paint, bgPaint } from '../theme.js';
+import { theme } from '../theme.js';
 import { truncateText } from '../core/constants.js';
 import type { DisplayMessage } from '../core/types.js';
 
 export function UserMessage({ msg, addMargin }: { msg: DisplayMessage; addMargin: boolean }) {
-  const content = truncateText(msg.content);
-  const lines = content.split('\n');
+  // Ink v5 supports backgroundColor at runtime even though types don't include it
+  const boxProps: any = {
+    flexDirection: 'column' as const,
+    marginTop: addMargin ? 1 : 0,
+    paddingRight: 1,
+  };
+  boxProps.backgroundColor = theme.userMessageBackground;
+
   return (
-    <Box flexDirection="column" marginTop={addMargin ? 1 : 0}>
-      {lines.map((line, i) => (
-        <Text key={i}>
-          {' '}
-          {line}
-          {' '}
-        </Text>
-      ))}
+    <Box {...boxProps}>
+      <Text color={theme.text}>{truncateText(msg.content)}</Text>
     </Box>
   );
 }

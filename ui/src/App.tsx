@@ -2,6 +2,7 @@
 // No business logic lives here. All logic is in hooks/ and services/.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
+import InkSpinner from 'ink-spinner';
 import { theme } from './theme.js';
 import { MessageList } from './components/MessageList.js';
 import { StatusLine } from './components/StatusLine.js';
@@ -187,10 +188,10 @@ export function App() {
   if (phase === 'connecting') {
     return (
       <Box flexDirection="column" padding={1}>
-        <Text>
-          <Text color={theme.claude}>⠋</Text>
+        <Box>
+          <Text color={theme.claude}><InkSpinner type="dots" /></Text>
           <Text color={theme.subtle}> 正在连接 luwu-server…</Text>
-        </Text>
+        </Box>
       </Box>
     );
   }
