@@ -37,23 +37,16 @@ Provider factory in app.rs: `create_provider(&ResolvedConfig, Client) → Arc<dy
 ### B3 — CI Pipeline — `4d53f70`
 GitHub Actions workflow (build + test + clippy -D warnings + fmt check). 19 clippy warnings auto-fixed. Workspace-wide cargo fmt. **0 clippy warnings, fmt check passes.**
 
+### B1 — Service Layer Extraction — `bf69115`
+AgentService extracted from agent.rs handler: correction detection, engine execution, cycle management, memory worker dispatch, message persistence. Handler is now thin HTTP transport (327→167 lines, -49%). AgentEvent enum separates domain events from transport formatting. Both streaming + non-streaming paths preserved.
+
 ## In Progress
 
 (none)
 
 ## Next
 
-### B1 — Service Layer Extraction (P2)
-
-agent.rs is ~320 lines — the only "fat" handler left. Business logic (cycle management, memory worker orchestration, correction detection, message persistence) lives inside the HTTP handler. Extract to a service layer so handlers are thin (extract request → call service → format SSE response).
-
-| # | Task | Files | Effort | Acceptance |
-|---|------|-------|--------|------------|
-| B1.1 | Extract agent business logic to `services/agent_service.rs` | `handlers/agent.rs` → new `services/` | Medium | agent.rs < 150 lines, service holds TurnEngine + memory orchestration |
-| B1.2 | Extract chat business logic to `services/chat_service.rs` | `handlers/chat.rs` → `services/` | Small | chat.rs < 100 lines, service holds provider + engine |
-| B1.3 | Wire services through AppState | `app.rs`, `main.rs` | Small | Services constructed at startup, injected via state |
-
-**Deliverable:** Handlers are thin transport layer. Business logic is testable without HTTP. Clean layer separation.
+(none — all planned phases complete)
 
 ## Deferred
 
