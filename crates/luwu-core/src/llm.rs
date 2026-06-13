@@ -90,4 +90,23 @@ pub trait LlmProvider: Send + Sync {
         &self,
         request: LlmRequest,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<LlmEvent>>>;
+
+    /// Non-streaming completion — returns the full text response.
+    ///
+    /// Default implementation collects `TextDelta` events from `stream()`.
+    /// Providers may override for a direct API call (no SSE overhead).
+    async fn complete(&self, request: LlmRequest) -> Result<String> {
+        let mut rx = self.stream(request).await?;
+        let mut result = String::new();
+        while let Some(event) = rx.recv().await {
+            match event {
+                Ok(LlmEvent::TextDelta(delta)) => result.push_str(&delta),
+                Ok(LlmEvent::Done(_)) => break,
+                Ok(LlmEvent::Error(e)) => return Err(crate::error::LuwuError::Llm(e)),
+                Err(e) => return Err(e),
+                _ => {}
+            }
+        }
+        Ok(result)
+    }
 }

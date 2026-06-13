@@ -1,126 +1,48 @@
-//! Memory worker functions — consolidation, checkpoint, observer, reflector.
+//! Memory worker functions — consolidation, observer, reflector.
 //!
-//! These currently use raw HTTP calls with a hardcoded model name.
-//! TODO (Phase A2): route through LlmProvider::complete() instead.
+//! All workers route LLM calls through the LlmProvider trait.
+//! No raw HTTP — no hardcoded model names.
+
+use std::sync::Arc;
 
 use luwu_core::message::{ContentPart, Role};
-use luwu_core::{writer_system_prompt, Message};
+use luwu_core::{LlmProvider, LlmRequest, Message};
 use luwu_memory::{
     apply_consolidation, consolidation_prompt,
     observer_prompt, reflector_prompt, ConsolidationNeeded, MemoryFileType,
     MemoryStore, Observation, Priority, Reflection,
 };
 
-/// Run the consolidation Writer — an LLM call that merges memory entries.
+/// Run the consolidation Writer — merges memory entries when files exceed threshold.
 pub(crate) async fn run_consolidation_writer(
-    api_key: &str,
-    base_url: &str,
-    content: &str,
-    file_path: &std::path::Path,
+    provider: Arc<dyn LlmProvider>,
+    model: String,
+    content: String,
+    file_path: std::path::PathBuf,
     file_type: MemoryFileType,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use serde_json::json;
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("failed to build worker HTTP client");
-    let body = json!({
-        "model": "MiniMax-M3",
-        "temperature": 0.1,
-        "max_tokens": 4096,
-        "messages": [
-            {"role": "system", "content": consolidation_prompt()},
-            {"role": "user", "content": content}
-        ]
-    });
-
-    let url = format!("{}/chat/completions", base_url);
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await?;
-
-    let data: serde_json::Value = resp.json().await?;
-    let consolidated = data
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or(content);
+) -> Result<(), String> {
+    let request = LlmRequest {
+        model,
+        messages: vec![Message::user(&content)],
+        tools: vec![],
+        system_prompt: Some(consolidation_prompt().to_string()),
+        temperature: Some(0.1),
+        max_tokens: Some(4096),
+        stop_sequences: vec![],
+    };
+    let consolidated = provider
+        .complete(request)
+        .await
+        .map_err(|e| format!("Consolidation LLM call failed: {e}"))?;
 
     let needed = ConsolidationNeeded {
         file_type,
         current_size: content.chars().count(),
         threshold: 8000,
-        path: file_path.to_path_buf(),
+        path: file_path,
     };
-    apply_consolidation(&needed, consolidated);
+    apply_consolidation(&needed, &consolidated);
     tracing::info!("Consolidated {} memory file", file_type.label());
-    Ok(())
-}
-
-/// Run the checkpoint Writer — an independent LLM call that extracts
-/// structured state from conversation history.
-pub(crate) async fn run_checkpoint_writer(
-    api_key: &str,
-    base_url: &str,
-    _messages: &[Message],
-    memory: &MemoryStore,
-) -> Result<(), String> {
-    let client: reqwest::Client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("failed to build worker HTTP client");
-    let system_prompt = writer_system_prompt();
-
-    let current_checkpoint = memory.read_checkpoint_raw();
-    let user_content = if current_checkpoint.is_empty() {
-        "（新会话，尚无历史记录）".to_string()
-    } else {
-        format!("以下是当前 checkpoint，请增量更新：\n\n{}", current_checkpoint)
-    };
-
-    let body = serde_json::json!({
-        "model": "MiniMax-M3",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 4096
-    });
-
-    let resp = client
-        .post(format!("{}/chat/completions", base_url))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Writer request failed: {e}"))?;
-
-    let data: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Writer parse failed: {e}"))?;
-
-    let output = data["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("");
-
-    if !output.is_empty() {
-        memory
-            .write_checkpoint_raw(output)
-            .map_err(|e| format!("Writer write failed: {e}"))?;
-    }
-
     Ok(())
 }
 
@@ -158,48 +80,29 @@ pub(crate) fn messages_to_transcript(messages: &[Message], max_chars: usize) -> 
 
 /// Run the Observer worker — extracts timestamped observations from conversation.
 pub(crate) async fn run_observer_worker(
-    api_key: &str,
-    base_url: &str,
-    messages: &[Message],
-    memory: &MemoryStore,
+    provider: Arc<dyn LlmProvider>,
+    model: String,
+    messages: Vec<Message>,
+    memory: Arc<MemoryStore>,
 ) -> Result<usize, String> {
-    let transcript = messages_to_transcript(messages, 30_000);
+    let transcript = messages_to_transcript(&messages, 30_000);
     if transcript.is_empty() {
         return Ok(0);
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("failed to build worker HTTP client");
-    let body = serde_json::json!({
-        "model": "MiniMax-M3",
-        "messages": [
-            {"role": "system", "content": observer_prompt()},
-            {"role": "user", "content": transcript}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 2048
-    });
-
-    let resp = client
-        .post(format!("{base_url}/chat/completions"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
+    let request = LlmRequest {
+        model,
+        messages: vec![Message::user(&transcript)],
+        tools: vec![],
+        system_prompt: Some(observer_prompt().to_string()),
+        temperature: Some(0.1),
+        max_tokens: Some(2048),
+        stop_sequences: vec![],
+    };
+    let output = provider
+        .complete(request)
         .await
-        .map_err(|e| format!("Observer request failed: {e}"))?;
-
-    let data: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Observer parse failed: {e}"))?;
-
-    let output = data["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("");
+        .map_err(|e| format!("Observer LLM call failed: {e}"))?;
 
     let mut count = 0;
     for line in output.lines() {
@@ -213,11 +116,15 @@ pub(crate) async fn run_observer_worker(
                 Some("low") => Priority::Low,
                 _ => Priority::Medium,
             };
-            let category = v.get("category").and_then(|c| c.as_str()).unwrap_or("event").to_string();
-            let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let category =
+                v.get("category").and_then(|c| c.as_str()).unwrap_or("event").to_string();
+            let content =
+                v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
             if !content.is_empty() {
                 let obs = Observation::new(priority, category, content);
-                if let Err(e) = memory.append_observation(&obs) { tracing::warn!(%e, "Failed to append observation"); }
+                if let Err(e) = memory.append_observation(&obs) {
+                    tracing::warn!(%e, "Failed to append observation");
+                }
                 count += 1;
             }
         }
@@ -229,9 +136,9 @@ pub(crate) async fn run_observer_worker(
 
 /// Run the Reflector worker — synthesizes durable reflections from observations.
 pub(crate) async fn run_reflector_worker(
-    api_key: &str,
-    base_url: &str,
-    memory: &MemoryStore,
+    provider: Arc<dyn LlmProvider>,
+    model: String,
+    memory: Arc<MemoryStore>,
 ) -> Result<usize, String> {
     let observations = memory.read_observations();
     if observations.is_empty() {
@@ -244,38 +151,19 @@ pub(crate) async fn run_reflector_worker(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("failed to build worker HTTP client");
-    let body = serde_json::json!({
-        "model": "MiniMax-M3",
-        "messages": [
-            {"role": "system", "content": reflector_prompt()},
-            {"role": "user", "content": obs_text}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 2048
-    });
-
-    let resp = client
-        .post(format!("{base_url}/chat/completions"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
+    let request = LlmRequest {
+        model,
+        messages: vec![Message::user(&obs_text)],
+        tools: vec![],
+        system_prompt: Some(reflector_prompt().to_string()),
+        temperature: Some(0.1),
+        max_tokens: Some(2048),
+        stop_sequences: vec![],
+    };
+    let output = provider
+        .complete(request)
         .await
-        .map_err(|e| format!("Reflector request failed: {e}"))?;
-
-    let data: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Reflector parse failed: {e}"))?;
-
-    let output = data["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("");
+        .map_err(|e| format!("Reflector LLM call failed: {e}"))?;
 
     let mut count = 0;
     for line in output.lines() {
@@ -284,7 +172,8 @@ pub(crate) async fn run_reflector_worker(
             continue;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let content =
+                v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
             let source_ids: Vec<String> = v
                 .get("source_ids")
                 .and_then(|s| s.as_array())
@@ -296,7 +185,9 @@ pub(crate) async fn run_reflector_worker(
                 .unwrap_or_default();
             if !content.is_empty() {
                 let refl = Reflection::new(content, source_ids);
-                if let Err(e) = memory.append_reflection(&refl) { tracing::warn!(%e, "Failed to append reflection"); }
+                if let Err(e) = memory.append_reflection(&refl) {
+                    tracing::warn!(%e, "Failed to append reflection");
+                }
                 count += 1;
             }
         }

@@ -154,12 +154,12 @@ pub async fn agent_chat(
                         if !needed.is_empty() {
                             for n in &needed {
                                 let content = std::fs::read_to_string(&n.path).unwrap_or_default();
-                                let rk2 = resolved.api_key.clone();
-                                let rb2 = resolved.base_url.clone();
                                 let np = n.path.clone();
                                 let ft = n.file_type;
+                                let prov = provider_arc.clone();
+                                let mdl = resolved.model.clone();
                                 state.spawn_worker(async move {
-                                    if let Err(e) = run_consolidation_writer(&rk2, &rb2, &content, &np, ft).await { tracing::warn!(%e, "Consolidation writer failed"); }
+                                    if let Err(e) = run_consolidation_writer(prov, mdl, content, np, ft).await { tracing::warn!(%e, "Consolidation writer failed"); }
                                 });
                             }
                             let con_evt = serde_json::json!({
@@ -180,12 +180,12 @@ pub async fn agent_chat(
 
                             // Spawn Observer worker.
                             let _wm = memory.clone();
-                            let rb = resolved.base_url.clone();
-                            let rk = resolved.api_key.clone();
+                            let prov = provider_arc.clone();
+                            let mdl = resolved.model.clone();
                             let obs_msgs = messages_for_workers.clone();
 
                             state.spawn_worker(async move {
-                                if let Err(e) = run_observer_worker(&rk, &rb, &obs_msgs, &_wm).await { tracing::warn!(%e, "Observer worker failed"); }
+                                if let Err(e) = run_observer_worker(prov, mdl, obs_msgs, _wm).await { tracing::warn!(%e, "Observer worker failed"); }
                             });
 
                             let tc_event = serde_json::json!({
@@ -207,8 +207,8 @@ pub async fn agent_chat(
                         cycle.mark_checkpoint(pct);
 
                         let _writer_memory = memory.clone();
-                        let resolved_base = resolved.base_url.clone();
-                        let resolved_key = resolved.api_key.clone();
+                        let prov = provider_arc.clone();
+                        let mdl = resolved.model.clone();
                         let obs_msgs = messages_for_workers.clone();
 
                         // Deterministic compaction — zero LLM cost.
@@ -218,10 +218,10 @@ pub async fn agent_chat(
                         // Spawn Observer worker.
                         state.spawn_worker(async move {
                             if let Err(e) = run_observer_worker(
-                                &resolved_key,
-                                &resolved_base,
-                                &obs_msgs,
-                                &_writer_memory,
+                                prov,
+                                mdl,
+                                obs_msgs,
+                                _writer_memory,
                             ).await { tracing::warn!(%e, "Observer worker failed"); }
                         });
 
@@ -235,13 +235,13 @@ pub async fn agent_chat(
                     CycleAction::Rebuild => {
                         // Spawn Reflector to synthesize observations into reflections.
                         let _refl_memory = memory.clone();
-                        let _refl_base = resolved.base_url.clone();
-                        let _refl_key = resolved.api_key.clone();
+                        let prov = provider_arc.clone();
+                        let mdl = resolved.model.clone();
                         state.spawn_worker(async move {
                             if let Err(e) = run_reflector_worker(
-                                &_refl_key,
-                                &_refl_base,
-                                &_refl_memory,
+                                prov,
+                                mdl,
+                                _refl_memory,
                             ).await { tracing::warn!(%e, "Reflector worker failed"); }
                         });
 
