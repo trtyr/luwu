@@ -18,6 +18,7 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use crate::types::*;
 
 use axum::extract::{Path, State};
 use axum::response::sse::{Event as SseEvent, Sse};
@@ -43,239 +44,17 @@ use luwu_memory::{
     compile_summary, observer_prompt, reflector_prompt,
 };
 
-use crate::config::Config;
-
-/// Build a ToolRegistry with all built-in tools registered.
-fn builtin_tool_registry() -> ToolRegistry {
-    let mut registry = ToolRegistry::new();
-    for tool in luwu_tools::all_builtin_tools() {
-        registry.register(tool);
-    }
-    registry
-}
-
-// ---------------------------------------------------------------------------
-// App state
-// ---------------------------------------------------------------------------
-
-pub struct AppState {
-    pub config: Config,
-    pub sessions: SessionManager,
-    pub working_dir: std::path::PathBuf,
-    pub skills: luwu_core::SkillRegistry,
-    /// Shared HTTP client with connection pool — all providers and workers use this.
-    pub http_client: reqwest::Client,
-    /// Tracked worker tasks — aborted on shutdown.
-    pub worker_tasks: tokio::sync::Mutex<JoinSet<()>>,
-}
-
-impl AppState {
-    /// Spawn a tracked worker task. All workers are aborted on shutdown.
-    pub fn spawn_worker(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
-        self.worker_tasks
-            .try_lock()
-            .expect("worker_tasks lock poisoned")
-            .spawn(task);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Request / Response types (OpenAI-compatible)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct ChatRequest {
-    pub model: Option<String>,
-    pub messages: Vec<ChatMessage>,
-    pub stream: Option<bool>,
-    pub temperature: Option<f64>,
-    pub max_tokens: Option<u64>,
-    pub tools: Option<serde_json::Value>,
-    /// Optional session ID — if provided, messages are appended to this session.
-    #[serde(default)]
-    pub session_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-// Non-streaming response types.
-#[derive(Debug, Serialize)]
-pub struct ChatResponse {
-    pub id: String,
-    pub object: String,
-    pub created: i64,
-    pub model: String,
-    pub choices: Vec<ChatChoice>,
-    pub usage: ChatUsage,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ChatChoice {
-    pub index: u32,
-    pub message: ChatResponseMessage,
-    pub finish_reason: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ChatResponseMessage {
-    pub role: String,
-    pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Default, Serialize, Clone)]
-pub struct ChatUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-}
-
-// Streaming chunk types.
-#[derive(Debug, Serialize)]
-pub struct ChatChunk {
-    pub id: String,
-    pub object: String,
-    pub created: i64,
-    pub model: String,
-    pub choices: Vec<ChatChunkChoice>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ChatChunkChoice {
-    pub index: u32,
-    pub delta: ChatChunkDelta,
-    pub finish_reason: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ChatChunkDelta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
-}
-
-// Models response.
-#[derive(Debug, Serialize)]
-pub struct ModelsResponse {
-    pub object: String,
-    pub data: Vec<ModelInfo>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ModelInfo {
-    pub id: String,
-    pub object: String,
-    pub created: i64,
-    pub owned_by: String,
-}
-
-// Session request types.
-#[derive(Debug, Deserialize)]
-pub struct CreateSessionRequest {
-    pub model: Option<String>,
-    /// Optional provider name to use (overrides default).
-    pub provider: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateSessionResponse {
-    pub id: String,
-    pub model: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SessionListResponse {
-    pub sessions: Vec<SessionSummary>,
-}
-
-// Agent chat request (session-scoped, full event stream).
-#[derive(Debug, Deserialize)]
-pub struct AgentChatRequest {
-    pub message: String,
-    /// Whether to stream SSE events (default: true).
-    #[serde(default = "default_true")]
-    pub stream: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
-
-pub fn router(state: AppState) -> Router {
-    Router::new()
-        // Health & models.
-        .route("/health", axum::routing::get(health))
-        .route("/v1/models", axum::routing::get(list_models))
-        // OpenAI-compatible chat completions.
-        .route(
-            "/v1/chat/completions",
-            axum::routing::post(chat_completions),
-        )
-        // Session management.
-        .route("/v1/sessions", axum::routing::get(list_sessions))
-        .route("/v1/sessions", axum::routing::post(create_session))
-        .route(
-            "/v1/sessions/{id}",
-            axum::routing::get(get_session).delete(delete_session),
-        )
-        // Agent event stream.
-        .route(
-            "/v1/sessions/{id}/chat",
-            axum::routing::post(agent_chat),
-        )
-        // Cancel.
-        .route(
-            "/v1/sessions/{id}/cancel",
-            axum::routing::post(cancel_turn),
-        )
-        // Memory endpoints.
-        .route(
-            "/v1/sessions/{id}/checkpoint",
-            axum::routing::get(get_checkpoint),
-        )
-        .route(
-            "/v1/sessions/{id}/history",
-            axum::routing::get(search_history),
-        )
-        // Skill endpoints.
-        .route(
-            "/v1/skills",
-            axum::routing::get(list_skills),
-        )
-        .route(
-            "/v1/skills/{name}",
-            axum::routing::get(get_skill_detail),
-        )
-        .layer(CorsLayer::permissive())
-        .with_state(Arc::new(state))
-}
+use crate::app::{AppState, builtin_tool_registry};
 
 // ---------------------------------------------------------------------------
 // Handlers — Health & Models
 // ---------------------------------------------------------------------------
 
-async fn health() -> &'static str {
+pub async fn health() -> &'static str {
     "ok"
 }
 
-async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse> {
+pub async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse> {
     let mut models = Vec::new();
 
     if let Some(default_model) = &state.config.default.model {
@@ -314,7 +93,7 @@ async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse>
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::collapsible_if)]
-async fn chat_completions(
+pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatRequest>,
 ) -> axum::response::Response {
@@ -578,12 +357,12 @@ async fn chat_completions(
 // Handlers — Sessions
 // ---------------------------------------------------------------------------
 
-async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<SessionListResponse> {
+pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<SessionListResponse> {
     let sessions = state.sessions.list().await;
     Json(SessionListResponse { sessions })
 }
 
-async fn create_session(
+pub async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> axum::response::Response {
@@ -612,7 +391,7 @@ async fn create_session(
     .into_response()
 }
 
-async fn get_session(
+pub async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
@@ -633,7 +412,7 @@ async fn get_session(
     }
 }
 
-async fn delete_session(
+pub async fn delete_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
@@ -648,7 +427,7 @@ async fn delete_session(
 // Handlers — Agent Chat (full event stream with tool visibility)
 // ---------------------------------------------------------------------------
 
-async fn agent_chat(
+pub async fn agent_chat(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<AgentChatRequest>,
@@ -1261,7 +1040,7 @@ async fn run_reflector_worker(
 // Handlers — Cancel
 // ---------------------------------------------------------------------------
 
-async fn cancel_turn(
+pub async fn cancel_turn(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
@@ -1279,7 +1058,7 @@ async fn cancel_turn(
 // ── Skill API Handlers ────────────────────────────────────────
 
 /// GET /v1/skills — list all loaded skills.
-async fn list_skills(
+pub async fn list_skills(
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Response {
     let skills = state.skills.list();
@@ -1296,7 +1075,7 @@ async fn list_skills(
 }
 
 /// GET /v1/skills/{name} — get skill details.
-async fn get_skill_detail(
+pub async fn get_skill_detail(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> axum::response::Response {
@@ -1316,7 +1095,7 @@ async fn get_skill_detail(
 // ── Memory API Handlers ────────────────────────────────────────
 
 /// GET /v1/sessions/{id}/checkpoint — get latest checkpoint.
-async fn get_checkpoint(
+pub async fn get_checkpoint(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
@@ -1343,7 +1122,7 @@ async fn get_checkpoint(
 }
 
 /// GET /v1/sessions/{id}/history?q=keyword — search session history.
-async fn search_history(
+pub async fn search_history(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,

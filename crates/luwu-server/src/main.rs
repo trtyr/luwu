@@ -1,12 +1,14 @@
 //! Luwu server — HTTP API for the luwu agent.
 
-mod api;
+mod app;
 mod config;
 mod error;
+mod types;
+mod handlers;
 
 use std::net::SocketAddr;
 
-use api::AppState;
+use app::AppState;
 use config::Config;
 use luwu_core::SessionManager;
 use tracing_subscriber::EnvFilter;
@@ -89,7 +91,7 @@ async fn main() {
         worker_tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
 
-    let app = crate::api::router(state);
+    let app = crate::app::router(state);
     println!("  GET    /v1/skills             List skills");
     println!("  GET    /v1/skills/{{name}}     Get skill detail");
 
