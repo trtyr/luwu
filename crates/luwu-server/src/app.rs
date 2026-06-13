@@ -52,7 +52,10 @@ pub fn builtin_tool_registry() -> ToolRegistry {
 /// Matching is by provider name (the config key):
 /// - `"anthropic"` → AnthropicProvider (Claude Messages API)
 /// - Everything else → OpenAiProvider (OpenAI-compatible: OpenAI, MiniMax, DeepSeek, etc.)
-pub fn create_provider(resolved: &ResolvedConfig, http_client: reqwest::Client) -> Arc<dyn LlmProvider> {
+pub fn create_provider(
+    resolved: &ResolvedConfig,
+    http_client: reqwest::Client,
+) -> Arc<dyn LlmProvider> {
     match resolved.provider_name.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::with_client(
             &resolved.api_key,
@@ -108,6 +111,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::get(handlers::search_history),
         )
         // Skill endpoints.
+        .route("/v1/stats", axum::routing::get(handlers::stats))
         .route("/v1/skills", axum::routing::get(handlers::list_skills))
         .route(
             "/v1/skills/{name}",

@@ -340,3 +340,68 @@ async fn cancel_nonexistent_session_returns_404_or_200() {
     // Cancel of non-existent session — either 404 or 200 with cancelled:false.
     assert!(response.status() == StatusCode::NOT_FOUND || response.status() == StatusCode::OK);
 }
+
+// ─── Stats ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn stats_returns_counts() {
+    let app = app().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["sessions"]["total"], 0);
+    assert_eq!(json["sessions"]["running"], 0);
+    assert_eq!(json["workers"]["active"], 0);
+}
+
+#[tokio::test]
+async fn stats_reflects_created_session() {
+    let app = app().await;
+
+    // Create a session first.
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sessions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"model": "test-model"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Now stats should show 1 session.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["sessions"]["total"], 1);
+}

@@ -71,6 +71,7 @@ impl AgentService {
     /// The handler is responsible for `try_set_running`, `RunningGuard`, session
     /// lookup, and config resolution — those involve HTTP status-code decisions
     /// that don't belong in the service layer.
+    #[tracing::instrument(skip_all)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         state: Arc<AppState>,
@@ -116,6 +117,7 @@ impl AgentService {
     /// 4. Resets `is_running` on completion (safety net alongside `RunningGuard`).
     ///
     /// The channel closes when the turn completes, is cancelled, or errors.
+    #[tracing::instrument(skip(self))]
     pub async fn run(
         self,
         user_message: String,
