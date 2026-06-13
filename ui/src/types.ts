@@ -19,6 +19,7 @@ export interface DisplayMessage {
 
 export interface StreamEvent {
   type: string;
+  delta?: string;       // text_delta / reasoning_delta 用 delta
   content?: string;
   name?: string;
   arguments?: string;
@@ -26,6 +27,9 @@ export interface StreamEvent {
   result?: string;
   message?: string;
   iteration?: number;
+  // done 事件附带
+  assistant_text?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }
 
 export interface ModelInfo {

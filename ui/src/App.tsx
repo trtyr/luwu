@@ -91,11 +91,15 @@ export function App() {
       await streamChat(sessionId, text, (ev: StreamEvent) => {
         switch (ev.type) {
           case 'text_delta':
-            accText += ev.content || '';
+            accText += ev.delta || '';
             setPhase('streaming');
             setMessages(prev => prev.map(m =>
               m.id === assistantId ? { ...m, content: accText } : m
             ));
+            break;
+
+          case 'reasoning_delta':
+            // Ignore reasoning for now — don't show in UI
             break;
 
           case 'tool_call': {
