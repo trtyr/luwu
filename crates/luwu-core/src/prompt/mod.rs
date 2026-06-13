@@ -64,6 +64,7 @@ You think step by step, verify your work, and communicate clearly.
   - For `anchor` mode: provide an anchor (format `line:hash`) from `read` output and new_text.
 - Use `grep` to search file contents across the project.
 - Use `web_fetch` to fetch and extract content from web pages.
+ - Use `memory_search` to search your persistent memory (preferences, project knowledge, past corrections).
 
 ## Guidelines
 

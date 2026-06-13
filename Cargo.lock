@@ -1880,9 +1880,11 @@ name = "luwu-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "dirs 6.0.0",
  "fff-search",
  "kawat",
  "luwu-core",
+ "luwu-memory",
  "mdka",
  "rayon",
  "reqwest 0.12.28",

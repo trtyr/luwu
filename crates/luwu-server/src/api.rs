@@ -34,7 +34,7 @@ use luwu_core::{
 };
 use luwu_llm::openai::OpenAiProvider;
 use luwu_tools;
-use luwu_memory::MemoryStore;
+use luwu_memory::{CorrectionDetector, CorrectionPattern, MemoryStore};
 
 use crate::config::Config;
 
@@ -700,6 +700,24 @@ async fn agent_chat(
 
     // Start streaming.
     let user_msg_for_session = req.message.clone();
+
+    // Correction detection — if user is correcting us, save immediately.
+    {
+        let mut detector = CorrectionDetector::new();
+        detector.advance_turn();
+        if let Some(correction) = detector.detect(&user_msg_for_session) {
+            let label = match correction.pattern_type {
+                CorrectionPattern::Strong => "纠错",
+                CorrectionPattern::Weak => "疑似纠错",
+            };
+            let entry = format!("[{}] {}", label, correction.full_message);
+            let mem_c = memory.clone();
+            tokio::spawn(async move {
+                let _ = mem_c.append_correction(&entry);
+            });
+            tracing::info!("Correction detected and saved");
+        }
+    }
     let event_rx = engine
         .run_stream(session_id, model, messages, req.message, Some(cancel_token))
         .await;
@@ -736,6 +754,26 @@ async fn agent_chat(
                         });
 
                         break;
+                    }
+                    TurnEvent::ToolCompleted { .. } => {
+                        if let CycleAction::Checkpoint = cycle.add_tool_call() {
+                            cycle.mark_tool_call_checkpoint();
+
+                            let _wm = memory.clone();
+                            let rb = resolved.base_url.clone();
+                            let rk = resolved.api_key.clone();
+
+                            writer_handle = Some(tokio::spawn(async move {
+                                run_checkpoint_writer(&rk, &rb, &[], &_wm).await.ok();
+                            }));
+
+                            let tc_event = serde_json::json!({
+                                "type": "checkpoint",
+                                "trigger": "tool_calls",
+                                "count": cycle.tool_usage(),
+                            });
+                            yield Ok(SseEvent::default().data(tc_event.to_string()));
+                        }
                     }
                     TurnEvent::Cancelled | TurnEvent::Error { .. } => break,
                     _ => {}

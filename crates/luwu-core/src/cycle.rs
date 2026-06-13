@@ -33,6 +33,12 @@ pub struct CycleState {
     pub triggered: Vec<u8>,
     /// Whether memory/cycle management is enabled.
     pub enabled: bool,
+    /// Tool calls in the current cycle.
+    pub tool_calls: usize,
+    /// Tool call threshold for triggering a checkpoint.
+    pub tool_call_threshold: usize,
+    /// Whether the tool-call checkpoint has already fired this cycle.
+    pub tool_checkpoint_done: bool,
 }
 
 impl Default for CycleState {
@@ -44,6 +50,9 @@ impl Default for CycleState {
             checkpoint_thresholds: vec![20, 45, 70],
             triggered: Vec::new(),
             enabled: true,
+            tool_calls: 0,
+            tool_call_threshold: 15,
+            tool_checkpoint_done: false,
         }
     }
 }
@@ -104,11 +113,35 @@ impl CycleState {
         }
     }
 
+    /// Record a tool call. Returns Checkpoint if threshold is crossed.
+    pub fn add_tool_call(&mut self) -> CycleAction {
+        if !self.enabled {
+            return CycleAction::Continue;
+        }
+        self.tool_calls += 1;
+        if self.tool_calls >= self.tool_call_threshold && !self.tool_checkpoint_done {
+            return CycleAction::Checkpoint;
+        }
+        CycleAction::Continue
+    }
+
+    /// Mark the tool-call checkpoint as done (prevents re-trigger).
+    pub fn mark_tool_call_checkpoint(&mut self) {
+        self.tool_checkpoint_done = true;
+    }
+
+    /// Current tool call count.
+    pub fn tool_usage(&self) -> usize {
+        self.tool_calls
+    }
+
     /// Reset for a new cycle (after rebuild).
     pub fn reset_cycle(&mut self) {
         self.cycle_index += 1;
         self.tokens_used = 0;
         self.triggered.clear();
+        self.tool_calls = 0;
+        self.tool_checkpoint_done = false;
     }
 
     /// Get current usage percentage.
@@ -173,5 +206,26 @@ mod tests {
     fn disabled_cycle() {
         let mut cs = CycleState::disabled();
         assert_eq!(cs.add_tokens(999999), CycleAction::Continue);
+    }
+
+    #[test]
+    fn cycle_tool_call() {
+        let mut cs = CycleState::new(1000);
+        // Below threshold → Continue
+        for _ in 0..14 {
+            assert_eq!(cs.add_tool_call(), CycleAction::Continue);
+        }
+        // 15th call → Checkpoint
+        assert_eq!(cs.add_tool_call(), CycleAction::Checkpoint);
+        cs.mark_tool_call_checkpoint();
+        // Further calls don't re-trigger
+        for _ in 0..10 {
+            assert_eq!(cs.add_tool_call(), CycleAction::Continue);
+        }
+        assert_eq!(cs.tool_usage(), 25);
+        // Reset clears tool state
+        cs.reset_cycle();
+        assert_eq!(cs.tool_usage(), 0);
+        assert!(!cs.tool_checkpoint_done);
     }
 }

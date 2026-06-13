@@ -16,6 +16,7 @@ pub mod read;
 pub mod grep;
 pub mod write;
 pub mod web_fetch;
+pub mod memory_search;
 
 pub mod hashline;
 use luwu_core::Tool;
@@ -29,5 +30,6 @@ pub fn all_builtin_tools() -> Vec<Box<dyn Tool>> {
         Box::new(edit::EditTool::new()),
         Box::new(grep::GrepTool::new()),
         Box::new(web_fetch::WebFetchTool::new()),
+        Box::new(memory_search::MemorySearchTool::new()),
     ]
 }

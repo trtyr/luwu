@@ -13,9 +13,11 @@
 //! - **Rebuild**: context reconstruction from persisted memory when window fills up
 
 pub mod checkpoint;
+pub mod correction;
 pub mod history;
 pub mod store;
 
 pub use checkpoint::Checkpoint;
+pub use correction::{CorrectionDetector, CorrectionPattern, CorrectionResult};
 pub use history::{HistoryEntry, HistoryLog, TokenEstimator};
 pub use store::MemoryStore;

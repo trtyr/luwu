@@ -6,6 +6,8 @@ edition.workspace = true
 
 [dependencies]
 luwu-core = { path = "../luwu-core" }
+luwu-memory = { path = "../luwu-memory" }
+dirs = "6"
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
