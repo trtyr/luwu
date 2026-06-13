@@ -418,3 +418,24 @@ ui/src/
 3. **hooks 纯逻辑**：不渲染任何 UI，返回 state + actions
 4. **services 可替换**：api.ts 可以换成 WebSocket 或任何后端
 5. **core 零依赖**：不 import 任何 React/Ink 组件
+
+---
+
+## Round 2-6 追加发现
+
+### PromptInput 边框
+- 只开顶部+底部边框（无左右）
+- borderColor 动态：busy=橙色, idle=灰色
+
+### ReasoningBlock
+- 折叠：`∴ Thinking` dimColor italic
+- 展开：paddingLeft=2 Markdown
+
+### Spinner
+- 64 动词池，thinkingStatus 状态机
+
+### SuggestionList
+- 列宽对齐，en-dash 分隔，最多6行
+
+### ToolResult
+- [icon] **ToolName**(params) → nested result
