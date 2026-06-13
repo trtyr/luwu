@@ -18,7 +18,7 @@ use futures::StreamExt;
 use luwu_core::{
     ContentPart, LlmEvent, LlmProvider, LlmRequest, LlmUsage, Message, Result, Role,
 };
-use crate::error::{LlmError, truncate_body};
+use crate::error::LlmError;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
@@ -56,6 +56,15 @@ impl OpenAiProvider {
             base_url: base_url.into(),
         }
     }
+
+    /// Create a provider with an existing reqwest client (shared connection pool).
+    pub fn with_client(api_key: impl Into<String>, base_url: impl Into<String>, client: Client) -> Self {
+        Self {
+            client,
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        }
+    }
 }
 
 #[async_trait]
@@ -88,25 +97,14 @@ impl LlmProvider for OpenAiProvider {
         let body = build_request_body(&request)?;
         debug!(model = %request.model, "Sending OpenAI streaming request");
 
-        let resp = self
+        let request = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
             .header("Content-Type", "application/json")
-            .json(&body)
-        .send()
-            .await
-            .map_err(LlmError::Http)?;
+            .json(&body);
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Status {
-                status: status.as_u16(),
-                body: truncate_body(&text, 500),
-            }
-            .into());
-        }
+        let resp = crate::retry::send_with_retry(&request).await?;
 
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let event_stream = Box::pin(sse::parse_sse_stream(resp));
@@ -132,14 +130,27 @@ async fn consume_stream(
     // Accumulate partial tool calls across chunks.
     let mut pending_tool_calls: HashMap<String, PartialToolCall> = HashMap::new();
 
-    while let Some(result) = event_stream.next().await {
+    loop {
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            event_stream.next(),
+        ).await {
+            Ok(Some(r)) => r,
+            Ok(None) => break, // stream ended normally
+            Err(_) => {
+                // LLM stalled mid-stream — 30s with no data
+                let _ = tx.send(Err(LlmError::Timeout.into())).await;
+                break;
+            }
+        };
+
         let sse_event = match result {
             Ok(e) => e,
             Err(e) => {
                 let _ = tx
-                    .send(Err(luwu_core::LuwuError::Llm(format!(
+                    .send(Err(LlmError::Stream(format!(
                         "SSE stream error: {e}"
-                    ))))
+                    )).into()))
                     .await;
                 break;
             }

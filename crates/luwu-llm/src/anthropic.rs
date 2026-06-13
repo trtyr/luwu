@@ -55,6 +55,15 @@ impl AnthropicProvider {
             base_url: base_url.into(),
         }
     }
+
+    /// Create a provider with an existing reqwest client (shared connection pool).
+    pub fn with_client(api_key: impl Into<String>, base_url: impl Into<String>, client: Client) -> Self {
+        Self {
+            client,
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        }
+    }
 }
 
 #[async_trait]
@@ -80,26 +89,15 @@ impl LlmProvider for AnthropicProvider {
         let body = build_request_body(&request)?;
         debug!(model = %request.model, "Sending Anthropic streaming request");
 
-        let resp = self
+        let request = self
             .client
             .post(format!("{}/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(LlmError::Http)?;
+            .json(&body);
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Status {
-                status: status.as_u16(),
-                body: truncate_body(&text, 500),
-            }
-            .into());
-        }
+        let resp = crate::retry::send_with_retry(&request).await?;
 
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let event_stream = Box::pin(sse::parse_sse_stream(resp));
@@ -123,7 +121,20 @@ async fn consume_stream(
     // Accumulate tool call arguments across content_block_delta events.
     let mut active_tool_calls: HashMap<String, PartialToolCall> = HashMap::new();
 
-    while let Some(result) = event_stream.next().await {
+    loop {
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            event_stream.next(),
+        ).await {
+            Ok(Some(r)) => r,
+            Ok(None) => break, // stream ended normally
+            Err(_) => {
+                // LLM stalled mid-stream — 30s with no data
+                let _ = tx.send(Err(LlmError::Timeout.into())).await;
+                break;
+            }
+        };
+
         let sse_event = match result {
             Ok(e) => e,
             Err(e) => {

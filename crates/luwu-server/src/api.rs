@@ -26,6 +26,7 @@ use axum::Json;
 use axum::Router;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
+use tokio::task::JoinSet;
 
 use luwu_core::{
     message::Role,
@@ -62,6 +63,20 @@ pub struct AppState {
     pub sessions: SessionManager,
     pub working_dir: std::path::PathBuf,
     pub skills: luwu_core::SkillRegistry,
+    /// Shared HTTP client with connection pool — all providers and workers use this.
+    pub http_client: reqwest::Client,
+    /// Tracked worker tasks — aborted on shutdown.
+    pub worker_tasks: tokio::sync::Mutex<JoinSet<()>>,
+}
+
+impl AppState {
+    /// Spawn a tracked worker task. All workers are aborted on shutdown.
+    pub fn spawn_worker(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.worker_tasks
+            .try_lock()
+            .expect("worker_tasks lock poisoned")
+            .spawn(task);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +349,7 @@ async fn chat_completions(
     let should_stream = req.stream.unwrap_or(false);
 
     // Build engine.
-    let provider = OpenAiProvider::with_base_url(&resolved.api_key, &resolved.base_url);
+    let provider = OpenAiProvider::with_client(&resolved.api_key, &resolved.base_url, state.http_client.clone());
     let tools = builtin_tool_registry();
     let events = EventBus::new(256);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -676,7 +691,7 @@ async fn agent_chat(
     };
 
     // Build engine.
-    let provider = OpenAiProvider::with_base_url(&resolved.api_key, &resolved.base_url);
+    let provider = OpenAiProvider::with_client(&resolved.api_key, &resolved.base_url, state.http_client.clone());
     let provider_arc: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(provider);
     let tools = builtin_tool_registry();
     let events = EventBus::new(256);
@@ -715,7 +730,7 @@ async fn agent_chat(
             };
             let entry = format!("[{}] {}", label, correction.full_message);
             let mem_c = memory.clone();
-            tokio::spawn(async move {
+            state.spawn_worker(async move {
                 if let Err(e) = mem_c.append_correction(&entry) { tracing::warn!(%e, "Failed to save correction"); }
             });
             tracing::info!("Correction detected and saved");
@@ -750,7 +765,7 @@ async fn agent_chat(
                         let id_c = id_clone.clone();
                         let user_msg = user_msg_for_session.clone();
                         let asst_text = assistant_text.clone();
-                        tokio::spawn(async move {
+                        state.spawn_worker(async move {
                             let mut msgs = vec![luwu_core::Message::user(&user_msg)];
                             if !asst_text.is_empty() {
                                 msgs.push(luwu_core::Message::assistant(&asst_text));
@@ -767,7 +782,7 @@ async fn agent_chat(
                                 let rb2 = resolved.base_url.clone();
                                 let np = n.path.clone();
                                 let ft = n.file_type;
-                                tokio::spawn(async move {
+                                state.spawn_worker(async move {
                                     if let Err(e) = run_consolidation_writer(&rk2, &rb2, &content, &np, ft).await { tracing::warn!(%e, "Consolidation writer failed"); }
                                 });
                             }
@@ -793,9 +808,9 @@ async fn agent_chat(
                             let rk = resolved.api_key.clone();
                             let obs_msgs = messages_for_workers.clone();
 
-                            writer_handle = Some(tokio::spawn(async move {
+                            state.spawn_worker(async move {
                                 if let Err(e) = run_observer_worker(&rk, &rb, &obs_msgs, &_wm).await { tracing::warn!(%e, "Observer worker failed"); }
-                            }));
+                            });
 
                             let tc_event = serde_json::json!({
                                 "type": "checkpoint",
@@ -826,14 +841,14 @@ async fn agent_chat(
                         if let Err(e) = memory.write_checkpoint_raw(&det_summary.to_markdown()) { tracing::warn!(%e, "Failed to write checkpoint"); }
 
                         // Spawn Observer worker.
-                        writer_handle = Some(tokio::spawn(async move {
+                        state.spawn_worker(async move {
                             if let Err(e) = run_observer_worker(
                                 &resolved_key,
                                 &resolved_base,
                                 &obs_msgs,
                                 &_writer_memory,
                             ).await { tracing::warn!(%e, "Observer worker failed"); }
-                        }));
+                        });
 
                         let cp_event = serde_json::json!({
                             "type": "checkpoint",
@@ -843,16 +858,13 @@ async fn agent_chat(
                         yield Ok(SseEvent::default().data(cp_event.to_string()));
                     }
                     CycleAction::Rebuild => {
-                        // Await Observer if still running.
-                        if let Some(h) = writer_handle.take() {
-                            if let Err(e) = h.await { tracing::warn!(%e, "Observer task panicked"); }
-                        }
+                        // Observer runs as tracked worker — no handle to await.
 
                         // Spawn Reflector to synthesize observations into reflections.
                         let _refl_memory = memory.clone();
                         let _refl_base = resolved.base_url.clone();
                         let _refl_key = resolved.api_key.clone();
-                        tokio::spawn(async move {
+                        state.spawn_worker(async move {
                             if let Err(e) = run_reflector_worker(
                                 &_refl_key,
                                 &_refl_base,

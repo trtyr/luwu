@@ -71,12 +71,22 @@ async fn main() {
         });
     println!("\x1b[2mskills:   {} loaded\x1b[0m", skills.len());
 
+    // Build shared HTTP client.
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .build()
+        .expect("failed to build shared HTTP client");
+
     // Build app state.
     let state = AppState {
         config,
         sessions,
         working_dir: working_dir.clone(),
         skills,
+        http_client,
+        worker_tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
     };
 
     let app = crate::api::router(state);
