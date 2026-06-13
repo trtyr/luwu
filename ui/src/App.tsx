@@ -9,7 +9,6 @@ import { PromptInput } from './components/PromptInput.js';
 import { Spinner } from './components/Spinner.js';
 import type { DisplayMessage, ToolCallInfo, Phase, StreamEvent } from './core/types.js';
 import { isBusy } from './core/state.js';
-import { LAYOUT } from './core/constants.js';
 import { useCommands } from './hooks/useCommands.js';
 import {
   checkHealth, createSession, streamChat, cancelTurn, getModels,
@@ -38,27 +37,8 @@ export function App() {
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [contextPct, setContextPct] = useState(0);
   const [iteration, setIteration] = useState(0);
-  const [thinkingElapsed, setThinkingElapsed] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const thinkingStartRef = useRef<number | null>(null);
   const spinnerVerbRef = useRef<string | undefined>(undefined);
-
-  const { executeCommand } = useCommands(model);
-
-  // Thinking timer
-  useEffect(() => {
-    if (phase !== 'thinking') {
-      if (thinkingStartRef.current !== null) {
-        const elapsed = Date.now() - thinkingStartRef.current;
-        thinkingStartRef.current = null;
-        setThinkingElapsed(elapsed);
-        const t = setTimeout(() => setThinkingElapsed(null), LAYOUT.THINKING_DURATION_DISPLAY);
-        return () => clearTimeout(t);
-      }
-    } else if (thinkingStartRef.current === null) {
-      thinkingStartRef.current = Date.now();
-    }
-  }, [phase]);
 
   // Init
   useEffect(() => {
@@ -221,14 +201,8 @@ export function App() {
 
       <Spinner phase={phase} verb={spinnerVerbRef.current} />
 
-      {thinkingElapsed !== null && !busy && (
-        <Box marginLeft={2}>
-          <Text color={theme.subtle}> ⏱ {(thinkingElapsed / 1000).toFixed(1)}s</Text>
-        </Box>
-      )}
-
       {phase === 'streaming' && (
-        <Box marginLeft={2}><Text color={theme.claude}>▎</Text></Box>
+        <Box marginLeft={2} marginTop={1}><Text color={theme.claude}>▎</Text></Box>
       )}
 
       <PromptInput

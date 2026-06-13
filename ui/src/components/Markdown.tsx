@@ -2,7 +2,7 @@
 // Borrowed from Claude Code's Markdown.tsx: fast-path plain text detection + marked token mapping
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
-import { marked, type Token } from 'marked';
+import { marked } from 'marked';
 import { theme } from '../theme.js';
 
 const MD_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
@@ -11,24 +11,27 @@ export function hasMarkdownSyntax(s: string): boolean {
   return MD_RE.test(s.length > 500 ? s.slice(0, 500) : s);
 }
 
+// Use any for tokens since marked's Token union is complex and varies by version
+type AnyToken = any;
+
 export function Markdown({ children }: { children: string }) {
-  const tokens = useMemo<Token[]>(() => {
+  const tokens = useMemo<AnyToken[]>(() => {
     if (!hasMarkdownSyntax(children)) {
-      return [{ type: 'paragraph', raw: children, text: children, tokens: [{ type: 'text', raw: children, text: children }] } as Token];
+      return [{ type: 'paragraph', raw: children, text: children, tokens: [{ type: 'text', raw: children, text: children }] }];
     }
     return marked.lexer(children);
   }, [children]);
 
   return (
     <Box flexDirection="column">
-      {tokens.map((tok, i) => (
+      {tokens.map((tok: AnyToken, i: number) => (
         <TokenRenderer key={i} token={tok} />
       ))}
     </Box>
   );
 }
 
-function TokenRenderer({ token }: { token: Token }) {
+function TokenRenderer({ token }: { token: AnyToken }) {
   switch (token.type) {
     case 'heading':
       return <Text bold color={theme.claude}>{token.text}</Text>;
@@ -43,15 +46,15 @@ function TokenRenderer({ token }: { token: Token }) {
       );
 
     case 'paragraph':
-      return <Text color={theme.text}>{renderInline(token)}</Text>;
+      return <Text color={theme.text}>{token.text || ''}</Text>;
 
     case 'list': {
-      const items = (token as Token.List).items || [];
+      const items = token.items || [];
       return (
         <Box flexDirection="column">
-          {items.map((item, i) => (
+          {items.map((item: AnyToken, i: number) => (
             <Box key={i}>
-              <Text color={theme.suggestion}>{(token as Token.List).ordered ? `${i + 1}.` : '•'} </Text>
+              <Text color={theme.suggestion}>{token.ordered ? `${i + 1}.` : '•'} </Text>
               <Text color={theme.text}>{item.text}</Text>
             </Box>
           ))}
@@ -71,12 +74,4 @@ function TokenRenderer({ token }: { token: Token }) {
     default:
       return <Text color={theme.text}>{token.text || ''}</Text>;
   }
-}
-
-/** Render inline tokens (bold, italic, code spans, links) */
-function renderInline(token: Token): string {
-  if (!token.tokens) return token.text || '';
-  // For Ink, we render inline as plain text — ANSI coloring per-span would
-  // require splitting into <Text> fragments. Keep it simple for MVP.
-  return token.text || '';
 }
