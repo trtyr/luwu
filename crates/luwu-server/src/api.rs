@@ -34,7 +34,10 @@ use luwu_core::{
 };
 use luwu_llm::openai::OpenAiProvider;
 use luwu_tools;
-use luwu_memory::{CorrectionDetector, CorrectionPattern, MemoryStore};
+use luwu_memory::{
+    MemoryFileType, CorrectionDetector, CorrectionPattern, MemoryStore,
+    apply_consolidation, consolidation_prompt,
+};
 
 use crate::config::Config;
 
@@ -753,6 +756,25 @@ async fn agent_chat(
                             sessions_c.append_messages(&id_c, msgs).await;
                         });
 
+                        // Check if any memory files need consolidation.
+                        let needed = memory.check_consolidation();
+                        if !needed.is_empty() {
+                            for n in &needed {
+                                let content = std::fs::read_to_string(&n.path).unwrap_or_default();
+                                let rk2 = resolved.api_key.clone();
+                                let rb2 = resolved.base_url.clone();
+                                let np = n.path.clone();
+                                let ft = n.file_type;
+                                tokio::spawn(async move {
+                                    run_consolidation_writer(&rk2, &rb2, &content, &np, ft).await.ok();
+                                });
+                            }
+                            let con_evt = serde_json::json!({
+                                "type": "consolidation",
+                                "files": needed.iter().map(|n| n.file_type.label()).collect::<Vec<_>>(),
+                            });
+                            yield Ok(SseEvent::default().data(con_evt.to_string()));
+                        }
                         break;
                     }
                     TurnEvent::ToolCompleted { .. } => {
@@ -894,6 +916,55 @@ async fn agent_chat(
     }
 }
 
+/// Run the consolidation Writer — an LLM call that merges memory entries.
+async fn run_consolidation_writer(
+    api_key: &str,
+    base_url: &str,
+    content: &str,
+    file_path: &std::path::Path,
+    file_type: MemoryFileType,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use serde_json::json;
+
+    let client = reqwest::Client::new();
+    let body = json!({
+        "model": "MiniMax-M3",
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "messages": [
+            {"role": "system", "content": consolidation_prompt()},
+            {"role": "user", "content": content}
+        ]
+    });
+
+    let url = format!("{}/chat/completions", base_url);
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await?;
+
+    let data: serde_json::Value = resp.json().await?;
+    let consolidated = data
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or(content);
+
+    let needed = luwu_memory::ConsolidationNeeded {
+        file_type,
+        current_size: content.chars().count(),
+        threshold: 8000,
+        path: file_path.to_path_buf(),
+    };
+    apply_consolidation(&needed, consolidated);
+    tracing::info!("Consolidated {} memory file", file_type.label());
+    Ok(())
+}
 /// Run the checkpoint Writer — an independent LLM call that extracts
 /// structured state from conversation history.
 async fn run_checkpoint_writer(

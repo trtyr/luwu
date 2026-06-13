@@ -27,6 +27,8 @@ pub struct MemoryStore {
     session_root: PathBuf,
     /// Token estimator.
     estimator: TokenEstimator,
+    /// Optional FTS5 search index (graceful degradation if unavailable).
+    search_index: Option<crate::search_index::SearchIndex>,
 }
 
 impl MemoryStore {
@@ -47,6 +49,9 @@ impl MemoryStore {
 
         let corrections_path = root.join("corrections.md");
 
+        // Try to open the FTS5 search index (graceful degradation on failure).
+        let search_index = crate::search_index::SearchIndex::open(&root.join("search.db")).ok();
+
         Self {
             root,
             global_path,
@@ -54,6 +59,7 @@ impl MemoryStore {
             project_root,
             session_root,
             estimator: TokenEstimator::default(),
+            search_index,
         }
     }
 
@@ -250,7 +256,11 @@ impl MemoryStore {
             ts = ts,
             entry = entry,
         );
-        append_to_file(&self.corrections_path, &line)
+        append_to_file(&self.corrections_path, &line)?;
+        if let Some(idx) = &self.search_index {
+            let _ = idx.index_entry("correction", entry, "");
+        }
+        Ok(())
     }
 
     // ── Memory Aging helpers ──
@@ -263,7 +273,11 @@ impl MemoryStore {
             ts = ts,
             entry = entry,
         );
-        append_to_file(&self.global_path, &line)
+        append_to_file(&self.global_path, &line)?;
+        if let Some(idx) = &self.search_index {
+            let _ = idx.index_entry("global", entry, "");
+        }
+        Ok(())
     }
 
     /// Append a project memory entry with aging timestamp.
@@ -275,7 +289,11 @@ impl MemoryStore {
             ts = ts,
             entry = entry,
         );
-        append_to_file(&path, &line)
+        append_to_file(&path, &line)?;
+        if let Some(idx) = &self.search_index {
+            let _ = idx.index_entry("project", entry, "");
+        }
+        Ok(())
     }
 
     /// Read global memory, stripping aging metadata for display.
@@ -288,6 +306,27 @@ impl MemoryStore {
         strip_aging_comments(&read_file_or_empty(self.project_root.join("project.md")))
     }
 
+    /// Check which memory files need consolidation (exceed size threshold).
+    pub fn check_consolidation(&self) -> Vec<crate::consolidation::ConsolidationNeeded> {
+        let checker = crate::consolidation::ConsolidationChecker::default();
+        let project_path = self.project_root.join("project.md");
+        checker.check_all(&self.global_path, &project_path, &self.corrections_path)
+    }
+
+    /// Get the global memory file path.
+    pub fn global_path(&self) -> &Path {
+        &self.global_path
+    }
+
+    /// Get the corrections file path.
+    pub fn corrections_path(&self) -> &Path {
+        &self.corrections_path
+    }
+
+    /// Get the project memory file path.
+    pub fn project_path(&self) -> PathBuf {
+        self.project_root.join("project.md")
+    }
     /// Search across all memory layers (for memory_search tool).
     /// Returns formatted results with layer labels.
     pub fn search_all(&self, query: &str) -> String {

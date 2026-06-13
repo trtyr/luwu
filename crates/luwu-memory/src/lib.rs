@@ -13,11 +13,15 @@
 //! - **Rebuild**: context reconstruction from persisted memory when window fills up
 
 pub mod checkpoint;
+pub mod consolidation;
 pub mod correction;
 pub mod history;
+pub mod search_index;
 pub mod store;
 
 pub use checkpoint::Checkpoint;
+pub use consolidation::{ConsolidationChecker, ConsolidationConfig, ConsolidationNeeded, ConsolidationResult, MemoryFileType, apply_consolidation, consolidation_prompt};
 pub use correction::{CorrectionDetector, CorrectionPattern, CorrectionResult};
 pub use history::{HistoryEntry, HistoryLog, TokenEstimator};
+pub use search_index::{SearchIndex, SearchResult};
 pub use store::MemoryStore;
