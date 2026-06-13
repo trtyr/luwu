@@ -1,7 +1,7 @@
 // Main TUI application — orchestrates chat, input, streaming, status
 import React, { useState, useCallback } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import TextInput from 'ink-text-input';
+import { CustomInput } from './components/CustomInput';
 import Spinner from 'ink-spinner';
 
 import { MessageItem } from './components/MessageItem';
@@ -18,15 +18,12 @@ function getCwd(): string {
   return process.cwd();
 }
 
-async function getGitBranch(): Promise<string | null> {
+function getGitBranchSync(): string | null {
   try {
-    const proc = Bun.spawn(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    return out.trim() || null;
+    const result = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', 'HEAD']);
+    if (result.exitCode !== 0) return null;
+    const text = new TextDecoder().decode(result.stdout);
+    return text.trim() || null;
   } catch {
     return null;
   }
@@ -58,7 +55,7 @@ export function App() {
         }
         const id = await createSession();
         setSessionId(id);
-        const branch = await getGitBranch();
+        const branch = getGitBranchSync();
         setGitBranch(branch);
         setPhase('ready');
 
@@ -255,12 +252,11 @@ export function App() {
       {/* input area */}
       <Box>
         <Text bold color="green">❯ </Text>
-        <TextInput
+        <CustomInput
           value={input}
           onChange={setInput}
           onSubmit={sendMessage}
           placeholder={thinking ? '正在回复… (Ctrl+C 取消)' : '输入消息，Enter 发送'}
-          showCursor
         />
       </Box>
 
