@@ -2,31 +2,17 @@
 
 use luwu_core::SessionManager;
 use luwu_server::app::AppState;
-use luwu_server::config::Config;
+use luwu_server::config::{Config, LoggingConfig};
 use std::net::SocketAddr;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-fn default_log_filter() -> EnvFilter {
-    EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("luwu=debug,tower_http=info,reqwest=warn"))
-}
-
-/// Init structured tracing with optional JSON format and file output.
-///
-/// Env vars:
-///   RUST_LOG          — override log level (e.g. "luwu=trace")
-///   LUWU_LOG_FORMAT   — "json" for structured JSON, anything else = human-readable
-///   LUWU_LOG_FILE     — if set, also write JSON logs to this file with daily rotation
-fn init_tracing() {
-    let filter = default_log_filter();
-    let is_json = std::env::var("LUWU_LOG_FORMAT")
-        .map(|v| v.eq_ignore_ascii_case("json"))
-        .unwrap_or(false);
-
-    let file_path = std::env::var("LUWU_LOG_FILE").ok();
+/// Init structured tracing from `[logging]` config section.
+fn init_tracing(log: &LoggingConfig) {
+    let filter = EnvFilter::new(&log.level);
+    let is_json = log.format.eq_ignore_ascii_case("json");
     let registry = tracing_subscriber::registry().with(filter);
 
-    if let Some(path) = &file_path {
+    if let Some(path) = &log.file {
         // File layer: always JSON for machine-readable logs, with daily rotation
         let file_appender = tracing_appender::rolling::daily(".", path);
         let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
@@ -52,15 +38,7 @@ fn init_tracing() {
 
 #[tokio::main]
 async fn main() {
-    // Init structured logging.
-    init_tracing();
-
-    println!(
-        "\x1b[2m陆吾 v{} — 昆仑山的管家\x1b[0m",
-        env!("CARGO_PKG_VERSION")
-    );
-
-    // Load config.
+    // Load config first (before logging — use eprintln for config errors).
     let config = match Config::load() {
         Ok(c) => c,
         Err(e) => {
@@ -73,6 +51,14 @@ async fn main() {
         }
     };
 
+    // Init structured logging from [logging] section.
+    init_tracing(&config.logging);
+
+    println!(
+        "\x1b[2m陆吾 v{} — 昆仑山的管家\x1b[0m",
+        env!("CARGO_PKG_VERSION")
+    );
+
     // Verify default provider is configured.
     if let Err(e) = config.resolve(None) {
         eprintln!("Config error: {e}");
@@ -82,6 +68,12 @@ async fn main() {
     let resolved = config.resolve(None).unwrap();
     println!("\x1b[2mprovider: {}\x1b[0m", resolved.provider_name);
     println!("\x1b[2mmodel:    {}\x1b[0m", resolved.model);
+    println!(
+        "\x1b[2mlogging:  {} {}, {}\x1b[0m",
+        config.logging.level,
+        config.logging.format,
+        config.logging.file.as_deref().unwrap_or("stderr")
+    );
     println!();
 
     // Set up luwu home directory.
@@ -162,7 +154,6 @@ async fn main() {
     println!("  GET    /v1/stats              Runtime stats");
     println!();
     println!("\x1b[2mCtrl+C to stop.\x1b[0m");
-    println!("\x1b[2mLogs: RUST_LOG / LUWU_LOG_FORMAT=json / LUWU_LOG_FILE=luwu.log\x1b[0m");
 
     // Graceful shutdown on Ctrl-C / SIGTERM.
     axum::serve(listener, app)

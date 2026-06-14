@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 use luwu_server::app::{AppState, router};
-use luwu_server::config::{Config, DefaultConfig, ProviderConfig};
+use luwu_server::config::{Config, DefaultConfig, LoggingConfig, ProviderConfig};
 
 /// Build a minimal AppState for testing — no file I/O, no network.
 fn test_state() -> AppState {
@@ -31,6 +31,7 @@ fn test_state() -> AppState {
                 model: Some("test-model".to_string()),
             },
             providers,
+            logging: LoggingConfig::default(),
         },
         sessions: luwu_core::SessionManager::new(),
         working_dir: std::env::temp_dir(),

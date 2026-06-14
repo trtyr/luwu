@@ -16,6 +16,8 @@ pub struct Config {
     pub default: DefaultConfig,
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -33,6 +35,39 @@ pub struct ProviderConfig {
     pub model: Option<String>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    /// Log level: trace, debug, info, warn, error
+    #[serde(default = "default_log_level")]
+    pub level: String,
+
+    /// Output format: "pretty" (human-readable) or "json"
+    #[serde(default = "default_log_format")]
+    pub format: String,
+
+    /// Optional file path for logs (JSON with daily rotation). None = stderr only.
+    #[serde(default)]
+    pub file: Option<String>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            format: default_log_format(),
+            file: None,
+        }
+    }
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_log_format() -> String {
+    "pretty".to_string()
 }
 
 #[derive(Debug, Clone)]
