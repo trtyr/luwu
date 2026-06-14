@@ -1,15 +1,16 @@
 // hooks/useCommands.ts — slash command execution
+// All interactive commands return overlay types (doc 29)
 import { useCallback } from 'react';
-import { getStats, getSkills, listSessions } from '../services/api.js';
 import { COMMANDS } from '../core/constants.js';
 import type { CommandDef } from '../core/types.js';
 
+export type OverlayType = 'help' | 'stats' | 'skills' | 'sessions' | 'model';
+
 export type CommandResult =
-  | { type: 'message'; content: string }
   | { type: 'clear' }
   | { type: 'exit' }
-  | { type: 'overlay'; overlay: 'model' }
-  | { type: 'setModel'; model: string; content: string };
+  | { type: 'overlay'; overlay: OverlayType }
+  | { type: 'setModel'; model: string };
 
 export function useCommands(model: string, setModel: (m: string) => void) {
   const executeCommand = useCallback(async (raw: string): Promise<CommandResult> => {
@@ -19,81 +20,35 @@ export function useCommands(model: string, setModel: (m: string) => void) {
 
     switch (cmd) {
       case 'help': case 'h': case '?':
-        return {
-          type: 'message',
-          content: [
-            '快捷键:',
-            '  ↑ ↓     浏览历史消息',
-            '  /       打开命令补全',
-            '  Tab     确认补全',
-            '  Esc     中断当前请求',
-            '  Ctrl+O  展开/折叠推理过程',
-            '  Ctrl+C  中断请求 / 退出',
-            '  Ctrl+U  清空输入',
-            '',
-            '命令:',
-            ...COMMANDS.map(c => `  /${c.name.padEnd(10)} ${c.description}`),
-          ].join('\n'),
-        };
+        return { type: 'overlay', overlay: 'help' };
 
       case 'clear': case 'cls':
         return { type: 'clear' };
 
-      case 'model': {
-        // /model with arg → switch directly
+      case 'model':
         if (arg) {
           setModel(arg);
-          return { type: 'setModel', model: arg, content: `已切换到模型: ${arg}` };
+          return { type: 'setModel', model: arg };
         }
-        // /model without arg → show interactive picker
-        return { type: 'overlay', overlay: 'model' as const };
-      }
+        return { type: 'overlay', overlay: 'model' };
 
       case 'stats':
-        try {
-          const s = await getStats();
-          return {
-            type: 'message',
-            content: [
-              `Sessions: ${s.sessions.total} total, ${s.sessions.running} running`,
-              `Workers:  ${s.workers}`,
-            ].join('\n'),
-          };
-        } catch { return { type: 'message', content: '⚠ 无法获取统计信息' }; }
+        return { type: 'overlay', overlay: 'stats' };
 
       case 'skills':
-        try {
-          const skills = await getSkills();
-          return {
-            type: 'message',
-            content: skills.length > 0
-              ? skills.map(s => `  ${s.name}: ${s.description ?? ''}`).join('\n')
-              : '(无可用技能)',
-          };
-        } catch { return { type: 'message', content: '⚠ 无法获取技能列表' }; }
+        return { type: 'overlay', overlay: 'skills' };
 
       case 'sessions': case 'ls':
-        try {
-          const sessions = await listSessions();
-          return {
-            type: 'message',
-            content: sessions.length > 0
-              ? sessions.slice(0, 10).map(s =>
-                  `  ${s.id.slice(0, 8)}… [${s.model}] ${s.message_count} msgs${s.is_running ? ' (running)' : ''}`
-                ).join('\n')
-              : '(无会话)',
-          };
-        } catch { return { type: 'message', content: '⚠ 无法获取会话列表' }; }
+        return { type: 'overlay', overlay: 'sessions' };
 
       case 'exit': case 'quit': case 'q':
         return { type: 'exit' };
 
       default:
-        return { type: 'message', content: `未知命令: /${cmd} — 输入 /help 查看可用命令` };
+        return { type: 'overlay', overlay: 'help' };
     }
   }, [model, setModel]);
 
   const getCommandList = useCallback((): CommandDef[] => COMMANDS, []);
-
   return { executeCommand, getCommandList };
 }

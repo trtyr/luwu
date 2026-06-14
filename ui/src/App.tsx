@@ -1,5 +1,6 @@
 // App.tsx — pure composition layer
 // Wires hooks → components. No business logic, no stream processing.
+// Overlay system: all interactive commands render in overlays (doc 29)
 import React, { useState, useCallback, useEffect } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { theme } from './theme.js';
@@ -9,20 +10,23 @@ import { PromptInput } from './components/PromptInput.js';
 import { Spinner } from './components/Spinner.js';
 import { Welcome } from './components/Welcome.js';
 import { ModelPicker } from './components/ModelPicker.js';
+import { HelpOverlay } from './components/HelpOverlay.js';
+import { StatsOverlay } from './components/StatsOverlay.js';
+import { SkillsOverlay } from './components/SkillsOverlay.js';
+import { SessionsOverlay } from './components/SessionsOverlay.js';
 import { isBusy } from './core/state.js';
 import type { TaskItem } from './core/types.js';
+import type { OverlayType } from './hooks/useCommands.js';
 import { useChatSession } from './hooks/useChatSession.js';
 import { useCommands } from './hooks/useCommands.js';
 import { getTasks } from './services/api.js';
-
-type Overlay = null | 'model';
 
 export function App() {
   const { exit } = useApp();
   const chat = useChatSession();
   const { executeCommand } = useCommands(chat.model, chat.setModel);
 
-  const [overlay, setOverlay] = useState<Overlay>(null);
+  const [overlay, setOverlay] = useState<OverlayType | null>(null);
   const [notification, setNotification] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [showTasks, setShowTasks] = useState(false);
@@ -46,7 +50,7 @@ export function App() {
     return () => { active = false; clearInterval(timer); };
   }, [showTasks, chat.sessionId, chat.phase]);
 
-  // Also fetch once when a todo tool completes (phase transitions to ready from streaming)
+  // Also fetch once when a todo tool completes
   useEffect(() => {
     if (chat.phase !== 'ready' || !chat.sessionId) return;
     getTasks(chat.sessionId).then(setTasks).catch(() => {});
@@ -63,14 +67,12 @@ export function App() {
       setNotification(`Model set to ${result.model}`);
       return;
     }
-    chat.setMessages(prev => [...prev, {
-      id: `sys-${Date.now()}`, role: 'system', timestamp: Date.now(), content: result.content,
-    }]);
   }, [executeCommand, exit, chat]);
 
   // Global keyboard
   useInput((input, key) => {
     if (overlay) {
+      if (key.escape) { setOverlay(null); return; }
       if (key.ctrl && input === 'c') exit();
       return;
     }
@@ -108,6 +110,41 @@ export function App() {
     return <ConnectingView />;
   }
 
+  // ── Render overlay content ──
+  function renderOverlay() {
+    switch (overlay) {
+      case 'help':
+        return <HelpOverlay onClose={() => setOverlay(null)} />;
+      case 'stats':
+        return <StatsOverlay sessionId={chat.sessionId ?? ''} model={chat.model} contextPercent={chat.contextPct} />;
+      case 'skills':
+        return <SkillsOverlay />;
+      case 'sessions':
+        return (
+          <SessionsOverlay
+            onRestore={(id) => {
+              chat.restoreSession(id);
+              setOverlay(null);
+            }}
+          />
+        );
+      case 'model':
+        return (
+          <ModelPicker
+            currentModel={chat.model}
+            onSelect={(m) => {
+              chat.setModel(m);
+              setOverlay(null);
+              setNotification(`Model set to ${m}`);
+            }}
+            onCancel={() => setOverlay(null)}
+          />
+        );
+      default:
+        return null;
+    }
+  }
+
   // ── Main composition ──
   return (
     <Box flexDirection="column">
@@ -120,16 +157,8 @@ export function App() {
         showTasks={showTasks}
       />
 
-      {overlay === 'model' ? (
-        <ModelPicker
-          currentModel={chat.model}
-          onSelect={(m) => {
-            chat.setModel(m);
-            setOverlay(null);
-            setNotification(`Model set to ${m}`);
-          }}
-          onCancel={() => setOverlay(null)}
-        />
+      {overlay ? (
+        renderOverlay()
       ) : (
         <PromptInput
           value={inputValue}

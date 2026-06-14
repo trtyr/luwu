@@ -37,6 +37,7 @@ export interface ChatSession {
   setModel: (m: string) => void;
   sendMessage: (text: string) => Promise<void>;
   cancel: () => void;
+  restoreSession: (id: string) => void;
   abortRef: React.MutableRefObject<AbortController | null>;
 }
 
@@ -83,6 +84,24 @@ export function useChatSession(): ChatSession {
       abortRef.current.abort();
       if (sessionId) cancelTurn(sessionId).catch(() => {});
     }
+  }, [sessionId]);
+
+  // ── Restore/switch to an existing session ──
+  const restoreSession = useCallback((id: string) => {
+    // Cancel any in-flight request
+    if (abortRef.current) {
+      abortRef.current.abort();
+      if (sessionId) cancelTurn(sessionId).catch(() => {});
+    }
+    setSessionId(id);
+    setContextPct(0);
+    setIteration(0);
+    setSpinnerVerb(undefined);
+    setPhase('ready');
+    setMessages([{
+      id: uid(), role: 'system', timestamp: Date.now(),
+      content: `已切换到 session ${id.slice(0, 8)}… · 服务器端保留完整对话历史`,
+    }]);
   }, [sessionId]);
 
   // ── Send message: builds blocks[] in chronological order ──
@@ -232,6 +251,6 @@ export function useChatSession(): ChatSession {
   return {
     messages, phase, sessionId, error, model, gitBranch,
     contextPct, iteration, spinnerVerb,
-    setMessages, setModel, sendMessage, cancel, abortRef,
+    setMessages, setModel, sendMessage, cancel, restoreSession, abortRef,
   };
 }
