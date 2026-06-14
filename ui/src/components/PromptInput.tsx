@@ -103,16 +103,16 @@ export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInpu
         flexDirection="row"
         alignItems="flex-start"
       >
-        <Text color={disabled ? theme.subtle : theme.suggestion} bold>{'> '}</Text>
+        <Text color={disabled ? theme.subtle : theme.subtle} bold>{'> '}</Text>
         <Box flexGrow={1} flexShrink={1}>
           {value.length > 0 ? (
             <Text>
               <Text color={value.startsWith('/') ? theme.warning : theme.text}>{value}</Text>
-              {!disabled && <Text color={theme.claude}>▏</Text>}
+              {!disabled && <Text color={theme.claude}>▎</Text>}
             </Text>
           ) : (
             <Text>
-              {!disabled && <Text color={theme.claude}>▏</Text>}
+              {!disabled && <Text color={theme.claude}>▎</Text>}
               <Text color={theme.subtle} italic> {placeholder}</Text>
             </Text>
           )}
