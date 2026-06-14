@@ -1,4 +1,8 @@
-// components/PromptInput.tsx — bordered input with slash autocomplete + history
+// components/PromptInput.tsx — Claude Code 1:1 input
+// Source: docs/16-input-box-detailed-ui.md
+// Border: round, top+bottom only (no left/right), always promptBorder
+// Pointer: ❯ figures.pointer in subtle color
+// Cursor: inverse video block ▎ in claude orange
 import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { theme } from '../theme.js';
@@ -85,16 +89,12 @@ export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInpu
     ? (phase === 'thinking' ? 'thinking…' : 'busy…')
     : 'send a message (↑↓ history, / for commands)';
 
-  // Claude Code: top + bottom border only (no left/right), round style
-  // Claude Code: border is always promptBorder, not phase-dependent
-  const borderColor = theme.promptBorder;
-
   return (
     <Box flexDirection="column" marginTop={1}>
       {isVisible && <SuggestionList suggestions={suggestions} selectedIndex={selectedIndex} />}
       <Box
         borderStyle="round"
-        borderColor={borderColor}
+        borderColor={theme.promptBorder}
         borderLeft={false}
         borderRight={false}
         borderBottom
@@ -102,16 +102,17 @@ export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInpu
         flexDirection="row"
         alignItems="flex-start"
       >
-        <Text color={disabled ? theme.subtle : theme.subtle} bold>{'> '}</Text>
+        {/* Claude Code ModeIndicator: ❯ pointer */}
+        <Text color={disabled ? theme.subtle : theme.permission} bold>{'❯ '}</Text>
         <Box flexGrow={1} flexShrink={1}>
           {value.length > 0 ? (
             <Text>
               <Text color={value.startsWith('/') ? theme.warning : theme.text}>{value}</Text>
-              {!disabled && <Text color={theme.claude}>▎</Text>}
+              {!disabled && <Text color={theme.claude}>{'▎'}</Text>}
             </Text>
           ) : (
             <Text>
-              {!disabled && <Text color={theme.claude}>▎</Text>}
+              {!disabled && <Text color={theme.claude}>{'▎'}</Text>}
               <Text color={theme.subtle} italic> {placeholder}</Text>
             </Text>
           )}

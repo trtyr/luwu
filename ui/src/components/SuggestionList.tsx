@@ -1,5 +1,8 @@
-// components/SuggestionList.tsx — Claude Code-style slash command list
-// Features: column alignment, en-dash separator, scrollable window, dimColor
+// components/SuggestionList.tsx — Claude Code 1:1 command panel
+// Source: docs/20-command-panels-ui.md
+// ▔ separator line in permission color at top
+// Selected: ❯ prefix in normal text color
+// Unselected: space prefix, dimColor text
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
@@ -16,10 +19,8 @@ export function SuggestionList({
 }) {
   if (suggestions.length === 0) return null;
 
-  // Compute stable column width from all suggestions (prevents layout shift)
   const maxDisplayWidth = Math.max(...suggestions.map(s => s.displayText.length));
 
-  // Scrollable window: keep selected item centered
   const start = Math.max(0, Math.min(
     selectedIndex - Math.floor(MAX_VISIBLE / 2),
     suggestions.length - MAX_VISIBLE,
@@ -29,6 +30,8 @@ export function SuggestionList({
 
   return (
     <Box flexDirection="column" justifyContent="flex-end">
+      {/* ▔ separator line in permission color (Claude Code 1:1) */}
+      <Text color={theme.permission}>{'▔'.repeat(50)}</Text>
       {visible.map((s, i) => {
         const realIdx = start + i;
         const selected = realIdx === selectedIndex;
@@ -36,12 +39,13 @@ export function SuggestionList({
 
         return (
           <Box key={s.id}>
-            <Text color={selected ? theme.suggestion : theme.subtle}>
-              {selected ? '▸ ' : '  '}
-            </Text>
-            <Text color={selected ? theme.suggestion : undefined} dimColor={!selected}>
-              {s.displayText}
-              {padding}
+            {selected ? (
+              <Text color={theme.text}>{'❯ '}</Text>
+            ) : (
+              <Text>{'  '}</Text>
+            )}
+            <Text dimColor={!selected} color={selected ? theme.text : undefined}>
+              {s.displayText}{padding}
             </Text>
             {s.description && (
               <>

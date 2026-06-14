@@ -2,7 +2,6 @@
 // No business logic lives here. All logic is in hooks/ and services/.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import InkSpinner from 'ink-spinner';
 import { theme } from './theme.js';
 import { MessageList } from './components/MessageList.js';
 import { StatusLine } from './components/StatusLine.js';
@@ -30,6 +29,9 @@ function getGitBranchSync(): string | null {
   } catch { return null; }
 }
 
+// Connecting spinner — Claude Code bouncing frames (first 3 for simple effect)
+const CONNECT_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽'];
+
 type Overlay = null | 'model';
 
 export function App() {
@@ -43,10 +45,18 @@ export function App() {
   const [contextPct, setContextPct] = useState(0);
   const [iteration, setIteration] = useState(0);
   const [overlay, setOverlay] = useState<Overlay>(null);
+  const [connFrame, setConnFrame] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const spinnerVerbRef = useRef<string | undefined>(undefined);
 
   const { executeCommand } = useCommands(model, setModel);
+
+  // Connecting animation
+  useEffect(() => {
+    if (phase !== 'connecting') return;
+    const t = setInterval(() => setConnFrame(f => (f + 1) % CONNECT_FRAMES.length), 50);
+    return () => clearInterval(t);
+  }, [phase]);
 
   // Init
   useEffect(() => {
@@ -203,13 +213,14 @@ export function App() {
     );
   }
 
-  // Connecting state
+  // Connecting state — Claude Code bouncing frames, no ink-spinner
   if (phase === 'connecting') {
     return (
       <Box flexDirection="column" padding={1}>
         <Box>
-          <Text color={theme.claude}><InkSpinner type="dots" /></Text>
-          <Text color={theme.subtle}> 正在连接 luwu-server…</Text>
+          <Text color={theme.claude}>{CONNECT_FRAMES[connFrame]} </Text>
+          <Text color={theme.text}>Connecting</Text>
+          <Text color={theme.subtle}>…</Text>
         </Box>
       </Box>
     );

@@ -1,19 +1,33 @@
-// ToolResult — Claude Code-style: ⎿ ToolName(params) → result
-// Structure: MessageResponse wraps the whole thing, inner rows are NOT double-indented
-import React from 'react';
+// ToolResult — Claude Code 1:1
+// Source: docs/04-tool-use-ui.md
+// Layout: SAME as assistant text — flat row [● dot minWidth=2] [content column]
+// NOT wrapped in MessageResponse — tools are independent rows
+// Status indicator: BLACK_CIRCLE for ALL states, COLOR differentiates:
+//   - running/unresolved: dimColor + BLINKING animation
+//   - success: theme.success green
+//   - error: theme.error red
+import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
-import { MessageResponse } from './MessageResponse.js';
+import { LAYOUT } from '../core/constants.js';
 import type { ToolCallInfo } from '../core/types.js';
 
-const STATUS_ICONS = { running: '⟳', done: '✓', error: '✗' } as const;
-
 export function ToolResult({ tool }: { tool: ToolCallInfo }) {
-  const icon = STATUS_ICONS[tool.status];
-  const iconColor =
-    tool.status === 'running' ? theme.warning :
-    tool.status === 'done' ? theme.success :
-    theme.error;
+  const isRunning = tool.status === 'running';
+  const isError = tool.status === 'error';
+  const isDone = tool.status === 'done';
+
+  // Blink animation for running/unresolved tools
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    if (!isRunning) return;
+    const t = setInterval(() => setVisible(v => !v), 500);
+    return () => clearInterval(t);
+  }, [isRunning]);
+
+  // Circle color by status
+  const circleColor = isDone ? theme.success : isError ? theme.error : undefined;
+  const circleChar = (isRunning && !visible) ? ' ' : LAYOUT.ASSISTANT_DOT;
 
   // Parse args — extract readable parameter
   let paramDisplay = '';
@@ -25,34 +39,31 @@ export function ToolResult({ tool }: { tool: ToolCallInfo }) {
     else if (parsed.pattern) paramDisplay = parsed.pattern;
     else if (typeof parsed === 'string') paramDisplay = parsed;
     else paramDisplay = tool.args;
-  } catch {
-    paramDisplay = tool.args;
-  }
-
-  if (paramDisplay.length > 60) {
-    paramDisplay = paramDisplay.slice(0, 57) + '...';
-  }
+  } catch { paramDisplay = tool.args; }
+  if (paramDisplay.length > 60) paramDisplay = paramDisplay.slice(0, 57) + '...';
 
   const resultDisplay = tool.result
-    ? tool.result.length > 80
-      ? tool.result.slice(0, 77) + '...'
-      : tool.result
+    ? tool.result.length > 80 ? tool.result.slice(0, 77) + '...' : tool.result
     : '';
 
   return (
-    <MessageResponse>
-      <Box flexDirection="row" flexWrap="nowrap">
-        <Text color={iconColor}>{icon} </Text>
-        <Text bold color={theme.text} wrap="truncate-end">{tool.name}</Text>
-        {paramDisplay && (
-          <Text color={theme.inactive}>({paramDisplay})</Text>
+    <Box alignItems="flex-start" flexDirection="row" width="100%" marginTop={1}>
+      {/* Status circle — same minWidth=2 as assistant dot */}
+      <Box minWidth={LAYOUT.DOT_MIN_WIDTH}>
+        <Text color={circleColor} dimColor={isRunning}>
+          {circleChar}
+        </Text>
+      </Box>
+      {/* Content column */}
+      <Box flexDirection="column" flexShrink={1} flexGrow={1}>
+        <Box flexDirection="row" flexWrap="nowrap">
+          <Text bold color={theme.text} wrap="truncate-end">{tool.name}</Text>
+          {paramDisplay && <Text color={theme.inactive}> ({paramDisplay})</Text>}
+        </Box>
+        {!isRunning && resultDisplay && (
+          <Text color={isError ? theme.error : theme.subtle}>{resultDisplay}</Text>
         )}
       </Box>
-      {tool.status !== 'running' && resultDisplay && (
-        <Text color={tool.status === 'error' ? theme.error : theme.subtle}>
-          {resultDisplay}
-        </Text>
-      )}
-    </MessageResponse>
+    </Box>
   );
 }
