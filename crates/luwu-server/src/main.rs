@@ -1,8 +1,23 @@
 //! Luwu — terminal-native AI agent.
-//! Single binary: axum server (background) + Ink TUI (foreground).
-//! Supports concurrent instances: first instance starts the server,
-//! subsequent instances connect to the existing server and only run TUI.
-//! Use --headless for server-only mode.
+//!
+//! Architecture: independent server daemon + TUI clients.
+//!
+//! `cargo run` with no server running:
+//!   → spawn detached --daemon process (server)
+//!   → poll until server is ready
+//!   → start TUI (connects to daemon)
+//!
+//! `cargo run` with server already running:
+//!   → start TUI (connects to existing daemon)
+//!
+//! `cargo run --headless`:
+//!   → foreground server with stderr banner (manual/debug use)
+//!
+//! `cargo run --daemon` (internal, auto-spawned):
+//!   → background server, file-only logging, writes PID file
+//!
+//! The daemon lifecycle is independent of any TUI. Kill any TUI
+//! and the server keeps running for all other clients.
 
 use luwu_core::SessionManager;
 use luwu_server::app::AppState;
@@ -14,27 +29,47 @@ use tracing_subscriber::{fmt, prelude::*};
 #[cfg(tui_embedded)]
 const TUI_BINARY: &[u8] = include_bytes!("../../../ui/dist/luwu-tui");
 
-/// Which mode are we in? Determines where logs go.
-/// Integrated → file only (terminal belongs to TUI).
-/// Headless   → stderr (terminal belongs to server).
-/// TuiOnly    → no server in this process, just a TUI client.
 static MODE: OnceLock<RunMode> = OnceLock::new();
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum RunMode {
-    Integrated,
+    Daemon,
     Headless,
-    TuiOnly,
+    Tui,
 }
 
 const LUWU_PORT: u16 = 51740;
+const DAEMON_READY_TIMEOUT_MS: u64 = 15000;
+const DAEMON_POLL_INTERVAL_MS: u64 = 100;
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let headless = args.iter().any(|a| a == "--headless" || a == "--server");
+    let daemon = args.iter().any(|a| a == "--daemon");
 
-    // ── Config (errors go to stderr, safe in all modes) ──
+    let addr = SocketAddr::from(([127, 0, 0, 1], LUWU_PORT));
+
+    // ── Mode selection ──
+    let mode = if daemon {
+        RunMode::Daemon
+    } else if headless {
+        RunMode::Headless
+    } else {
+        #[cfg(tui_embedded)]
+        {
+            ensure_server_running(addr).await;
+            RunMode::Tui
+        }
+        #[cfg(not(tui_embedded))]
+        {
+            RunMode::Headless
+        }
+    };
+
+    let _ = MODE.set(mode);
+
+    // ── Config ──
     let config = match Config::load() {
         Ok(c) => c,
         Err(e) => {
@@ -47,47 +82,18 @@ async fn main() {
         }
     };
 
-    // ── Decide mode BEFORE init_tracing ──
-    let addr = SocketAddr::from(([127, 0, 0, 1], LUWU_PORT));
-
-    #[cfg(tui_embedded)]
-    let mode = if headless {
-        RunMode::Headless
-    } else {
-        // ── Concurrent instance support ──
-        // Check if a server is already running on LUWU_PORT.
-        // If yes → TuiOnly (just launch TUI, connect to existing server).
-        // If no  → Integrated (start server + TUI).
-        let server_running = tokio::net::TcpStream::connect(addr).await.is_ok();
-        if server_running {
-            tracing::info!("Server already running on {addr}, TUI-only mode");
-            RunMode::TuiOnly
-        } else {
-            RunMode::Integrated
-        }
-    };
-    #[cfg(not(tui_embedded))]
-    let mode = RunMode::Headless;
-
-    let _ = MODE.set(mode);
-
     init_tracing(&config.logging);
 
-    // ── TUI-only: skip server entirely ──
-    if mode == RunMode::TuiOnly {
+    // ── TUI mode: just launch TUI, no server in this process ──
+    if mode == RunMode::Tui {
         #[cfg(tui_embedded)]
         {
-            run_tui_only().await;
-            return;
+            run_tui().await;
         }
-        #[cfg(not(tui_embedded))]
-        {
-            eprintln!("Server already running, but TUI not embedded. Use --headless.");
-            return;
-        }
+        return;
     }
 
-    // ── Resolve config ──
+    // ── Daemon / Headless: start the server ──
     let resolved = match config.resolve(None) {
         Ok(r) => r,
         Err(e) => {
@@ -96,7 +102,6 @@ async fn main() {
         }
     };
 
-    // ── Build AppState ──
     let luwu_home = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".luwu");
@@ -146,51 +151,129 @@ async fn main() {
         }
     };
 
-    // ── Branch ──
     match mode {
-        RunMode::Integrated => {
-            #[cfg(tui_embedded)]
-            {
-                run_integrated(app, listener).await;
-                return;
-            }
-            #[cfg(not(tui_embedded))]
-            {
-                eprintln!("TUI not embedded. Running headless.");
-            }
-        }
-        RunMode::Headless => {}
-        RunMode::TuiOnly => unreachable!(),
-    }
+        RunMode::Daemon => {
+            // Write PID file so users can kill the daemon
+            let pid_file = luwu_home.join("luwu.pid");
+            let _ = std::fs::create_dir_all(&luwu_home);
+            let _ = std::fs::write(&pid_file, std::process::id().to_string());
+            tracing::info!("Daemon PID {} written to {}", std::process::id(), pid_file.display());
 
-    run_headless(app, listener, addr, &resolved, recovered).await;
+            // Clean up PID file on exit
+            let pid_file_clone = pid_file.clone();
+            tokio::spawn(async move {
+                shutdown_signal().await;
+                let _ = std::fs::remove_file(&pid_file_clone);
+                tracing::info!("Daemon shutting down");
+                std::process::exit(0);
+            });
+
+            run_server(app, listener, &resolved, recovered, mode).await;
+        }
+        RunMode::Headless => {
+            run_server(app, listener, &resolved, recovered, mode).await;
+        }
+        RunMode::Tui => unreachable!(),
+    }
 }
 
-/// TUI-only mode: server is already running in another process.
-/// Just extract and spawn the TUI binary, then exit when it exits.
+// ── Server detection + daemon spawning ──
+
+/// Ensure a server is running on addr. If not, spawn a detached daemon.
+/// Polls until the daemon is accepting connections (or timeout).
+async fn ensure_server_running(addr: SocketAddr) {
+    // Already running?
+    if tokio::net::TcpStream::connect(addr).await.is_ok() {
+        return;
+    }
+
+    // Spawn detached daemon
+    let current_exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Cannot determine executable path: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    tracing::debug!("Spawning daemon: {} --daemon", current_exe.display());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let _child = match std::process::Command::new(&current_exe)
+            .arg("--daemon")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0) // new process group → survives parent terminal death
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Failed to spawn server daemon: {e}");
+                eprintln!("Try 'cargo run --headless' to run the server manually.");
+                std::process::exit(1);
+            }
+        };
+        // Intentionally drop — the daemon runs independently
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _child = match std::process::Command::new(&current_exe)
+            .arg("--daemon")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Failed to spawn server daemon: {e}");
+                std::process::exit(1);
+            }
+        };
+    }
+
+    // Poll until daemon is ready
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(DAEMON_READY_TIMEOUT_MS);
+
+    loop {
+        if std::time::Instant::now() >= deadline {
+            eprintln!("Server daemon failed to start within {DAEMON_READY_TIMEOUT_MS}ms");
+            eprintln!("Try 'cargo run --headless' to see server errors.");
+            std::process::exit(1);
+        }
+
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(DAEMON_POLL_INTERVAL_MS)).await;
+    }
+}
+
+// ── TUI ──
+
 #[cfg(tui_embedded)]
-async fn run_tui_only() {
-    tracing::info!("Starting in TUI-only mode (connecting to existing server)");
+async fn run_tui() {
+    tracing::debug!("Starting TUI client");
 
     let temp_dir = std::env::temp_dir();
     let tui_path = temp_dir.join(format!("luwu-tui-{}", std::process::id()));
 
     if let Err(e) = std::fs::write(&tui_path, TUI_BINARY) {
-        tracing::error!("Failed to write TUI binary: {e}");
+        eprintln!("Failed to extract TUI binary: {e}");
         return;
     }
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&tui_path)
-            .map(|m| m.permissions())
-            .unwrap_or_else(|_| std::fs::Permissions::from_mode(0o755));
-        perms.set_mode(0o755);
-        let _ = std::fs::set_permissions(&tui_path, perms);
+        let _ = std::fs::set_permissions(&tui_path, std::fs::Permissions::from_mode(0o755));
     }
-
-    tracing::debug!("TUI binary extracted to {}", tui_path.display());
 
     let mut child = match tokio::process::Command::new(&tui_path)
         .stdin(std::process::Stdio::inherit())
@@ -200,7 +283,7 @@ async fn run_tui_only() {
     {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("Failed to spawn TUI: {e}");
+            eprintln!("Failed to launch TUI: {e}");
             let _ = std::fs::remove_file(&tui_path);
             return;
         }
@@ -210,108 +293,56 @@ async fn run_tui_only() {
     let _ = std::fs::remove_file(&tui_path);
 }
 
-/// Integrated mode: server in background, TUI in foreground.
-/// ALL server output goes to ~/.luwu/logs/ — terminal is 100% TUI.
-#[cfg(tui_embedded)]
-async fn run_integrated(app: axum::Router, listener: tokio::net::TcpListener) {
-    tracing::info!("Starting in integrated mode (server + TUI)");
+// ── Server ──
 
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-
-    let server_task = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                shutdown_rx.changed().await.ok();
-                tracing::info!("Server shutting down (TUI exited)");
-            })
-            .await
-    });
-
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    let temp_dir = std::env::temp_dir();
-    let tui_path = temp_dir.join(format!("luwu-tui-{}", std::process::id()));
-
-    if let Err(e) = std::fs::write(&tui_path, TUI_BINARY) {
-        tracing::error!("Failed to write TUI binary: {e}");
-        let _ = shutdown_tx.send(true);
-        let _ = server_task.await;
-        return;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&tui_path)
-            .map(|m| m.permissions())
-            .unwrap_or_else(|_| std::fs::Permissions::from_mode(0o755));
-        perms.set_mode(0o755);
-        let _ = std::fs::set_permissions(&tui_path, perms);
-    }
-
-    tracing::debug!("TUI binary extracted to {}", tui_path.display());
-
-    // TUI gets full control of stdin/stdout/stderr
-    let mut child = match tokio::process::Command::new(&tui_path)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("Failed to spawn TUI: {e}");
-            let _ = std::fs::remove_file(&tui_path);
-            let _ = shutdown_tx.send(true);
-            let _ = server_task.await;
-            return;
-        }
-    };
-
-    let _ = child.wait().await;
-    let _ = std::fs::remove_file(&tui_path);
-
-    // ── Shutdown decision ──
-    // The server-starter's TUI has exited. But other TUI clients may still
-    // be connected to the server. We keep the server alive briefly to let
-    // them finish, then shut down. If no other clients exist, the server
-    // shuts down immediately after the grace period.
-    tracing::info!("TUI exited, keeping server alive for 3s grace period...");
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    let _ = shutdown_tx.send(true);
-    let _ = server_task.await;
-}
-
-/// Headless mode: server in foreground with startup banner to stderr.
-async fn run_headless(
+async fn run_server(
     app: axum::Router,
     listener: tokio::net::TcpListener,
-    addr: SocketAddr,
     resolved: &luwu_server::config::ResolvedConfig,
     recovered: usize,
+    mode: RunMode,
 ) {
-    eprintln!(
-        "\x1b[2m陆吾 v{} — 昆仑山的管家\x1b[0m",
-        env!("CARGO_PKG_VERSION")
-    );
-    eprintln!("\x1b[2mprovider: {}\x1b[0m", resolved.provider_name);
-    eprintln!("\x1b[2mmodel:    {}\x1b[0m", resolved.model);
-    eprintln!("\x1b[2msessions: {} recovered\x1b[0m", recovered);
-    eprintln!();
-    eprintln!("Listening on http://{addr}");
-    eprintln!();
-    eprintln!("\x1b[2mCtrl+C to stop.\x1b[0m");
+    match mode {
+        RunMode::Daemon => {
+            // Silent — logs go to file only, no terminal output
+            tracing::info!(
+                "Daemon listening on 127.0.0.1:{} (model: {})",
+                LUWU_PORT,
+                resolved.model
+            );
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!("Server error: {e}");
+                    std::process::exit(1);
+                });
+        }
+        RunMode::Headless => {
+            eprintln!(
+                "\x1b[2m陆吾 v{} — 昆仑山的管家\x1b[0m",
+                env!("CARGO_PKG_VERSION")
+            );
+            eprintln!("\x1b[2mprovider: {}\x1b[0m", resolved.provider_name);
+            eprintln!("\x1b[2mmodel:    {}\x1b[0m", resolved.model);
+            eprintln!("\x1b[2msessions: {} recovered\x1b[0m", recovered);
+            eprintln!();
+            eprintln!("Listening on http://127.0.0.1:{LUWU_PORT}");
+            eprintln!();
+            eprintln!("\x1b[2mCtrl+C to stop.\x1b[0m");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("Server error: {e}");
-            std::process::exit(1);
-        });
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("Server error: {e}");
+                    std::process::exit(1);
+                });
 
-    eprintln!("\x1b[2m再见 👋\x1b[0m");
+            eprintln!("\x1b[2m再见 👋\x1b[0m");
+        }
+        _ => unreachable!(),
+    }
 }
 
 // ── Tracing ──
@@ -324,9 +355,8 @@ fn init_tracing(log: &LoggingConfig) {
     let mode = MODE.get().copied().unwrap_or(RunMode::Headless);
 
     match mode {
-        RunMode::Integrated | RunMode::TuiOnly => {
-            // ── Integrated/TuiOnly: file ONLY, zero terminal output ──
-            // Logs go to ~/.luwu/logs/luwu.log (daily rotated)
+        RunMode::Daemon | RunMode::Tui => {
+            // File ONLY, zero terminal output
             let log_dir = dirs::home_dir()
                 .map(|h| h.join(".luwu").join("logs"))
                 .unwrap_or_else(|| std::path::PathBuf::from("logs"));
@@ -342,11 +372,9 @@ fn init_tracing(log: &LoggingConfig) {
                 fmt::layer().with_writer(file_writer).boxed()
             };
             registry.with(file_layer).init();
-
             tracing::info!("Logging to {} ({:?} mode)", log_dir.display(), mode);
         }
         RunMode::Headless => {
-            // ── Headless: stderr + optional file ──
             if let Some(path) = &log.file {
                 let file_appender = tracing_appender::rolling::daily(".", path);
                 let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
