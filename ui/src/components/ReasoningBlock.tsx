@@ -1,4 +1,7 @@
 // ReasoningBlock — ∴ thinking display with ctrl+o expand toggle
+// Source: docs/03-thinking-block-ui.md
+// Collapsed: ∴ Thinking (ctrl+o to expand) in dimColor italic
+// Expanded: ∴ Thinking… + gap=1 + paddingLeft=2 Markdown dimColor
 import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { theme } from '../theme.js';
@@ -27,9 +30,8 @@ export function ReasoningBlock({ reasoning, addMargin = false, active = true }: 
   if (!expanded) {
     return (
       <Box marginTop={mt}>
-        <Text dimColor italic>
-          ∴ Thinking{' '}
-          <Text color={theme.subtle}>(ctrl+o to expand)</Text>
+        <Text color={theme.inactive} italic>
+          {'∴ Thinking (ctrl+o to expand)'}
         </Text>
       </Box>
     );
@@ -37,9 +39,8 @@ export function ReasoningBlock({ reasoning, addMargin = false, active = true }: 
 
   return (
     <Box flexDirection="column" marginTop={mt} width="100%">
-      <Text dimColor italic>
-        ∴ Thinking…{' '}
-        <Text color={theme.subtle}>(ctrl+o to collapse)</Text>
+      <Text color={theme.inactive} italic>
+        {'∴ Thinking…'}
       </Text>
       <Box paddingLeft={2} marginTop={1}>
         <Markdown>{reasoning}</Markdown>

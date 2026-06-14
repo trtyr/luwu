@@ -13,8 +13,8 @@ describe('theme', () => {
     expect(theme.claude).toBe('#D77757');
   });
 
-  test('suggestion blue is correct', () => {
-    expect(theme.suggestion).toBe('#5769F7');
+  test('suggestion is correct (dark theme blue-purple)', () => {
+    expect(theme.suggestion).toBe('#B1B9F9');
   });
 
   test('error red is bright', () => {

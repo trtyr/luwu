@@ -1,14 +1,14 @@
 // Markdown renderer for Ink TUI
 // Based on Claude Code's formatToken (markdown.ts):
 // - code: plain text (no fence, no color unless syntax highlighting)
-// - blockquote: ▎ BLOCKQUOTE_BAR prefix + italic
+// - blockquote: ▎ BLOCKQUOTE_BAR prefix + italic (NOT dim — "chalk.dim nearly invisible on dark themes")
+// - codespan: permission color (rgb(177,185,249) blue-purple), NOT success green
 // - strikethrough: DISABLED (model uses ~ for "approximate")
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
 import { theme } from '../theme.js';
 
-// Same regex as Claude Code — matches any MD marker
 const MD_SYNTAX_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
 
 export function hasMarkdownSyntax(s: string): boolean {
@@ -17,7 +17,6 @@ export function hasMarkdownSyntax(s: string): boolean {
 
 type AnyToken = any;
 
-// Disable strikethrough parsing (model uses ~ for approximate)
 let markedConfigured = false;
 function ensureMarkedConfig() {
   if (markedConfigured) return;
@@ -37,8 +36,6 @@ export function Markdown({ children }: { children: string }) {
   return (
     <Box flexDirection="column">
       {tokens.map((tok: AnyToken, i: number) => (
-        // marginTop on non-first block tokens creates paragraph spacing
-        // Claude Code achieves this via EOL appends in formatToken
         <Box key={i} marginTop={i > 0 ? 1 : 0}>
           <TokenRenderer token={tok} />
         </Box>
@@ -49,12 +46,15 @@ export function Markdown({ children }: { children: string }) {
 
 function TokenRenderer({ token }: { token: AnyToken }) {
   switch (token.type) {
-    case 'heading':
+    case 'heading': {
+      // H1 = bold + italic + underline; H2/H3+ = bold only
+      const isH1 = token.depth === 1;
       return (
-        <Text bold color={theme.claude}>
+        <Text bold={true} italic={isH1} underline={isH1} color={theme.text}>
           {renderInline(token.tokens || [{ type: 'text', text: token.text }])}
         </Text>
       );
+    }
     case 'code':
       // Claude Code: code without highlighting = plain text, no fence
       return <Text color={theme.text}>{token.text}</Text>;
@@ -65,8 +65,9 @@ function TokenRenderer({ token }: { token: AnyToken }) {
       return (
         <Box flexDirection="column">
           {items.map((item: AnyToken, i: number) => (
-            <Box key={i}>
-              <Text color={theme.suggestion}>{token.ordered ? `${i + 1}.` : '•'} </Text>
+            <Box key={i} flexDirection="row">
+              <Text>{'  '.repeat(token.depth || 0)}</Text>
+              <Text color={theme.text}>{token.ordered ? `${i + 1}. ` : '- '}</Text>
               <Text color={theme.text}>{renderInline(item.tokens || [{ type: 'text', text: item.text }])}</Text>
             </Box>
           ))}
@@ -74,17 +75,24 @@ function TokenRenderer({ token }: { token: AnyToken }) {
       );
     }
     case 'blockquote':
-      // Claude Code uses BLOCKQUOTE_BAR (▎) prefix, italic text
-      return <Text color={theme.inactive} italic>▎ {token.text}</Text>;
+      // Claude Code: ▎ prefix (dim) + content italic (NOT dim — dim invisible on dark themes)
+      return (
+        <Box flexDirection="column">
+          {(token.text || '').split('\n').filter(Boolean).map((line: string, i: number) => (
+            <Box key={i} flexDirection="row">
+              <Text color={theme.inactive}>{'▎ '}</Text>
+              <Text color={theme.text} italic>{line}</Text>
+            </Box>
+          ))}
+        </Box>
+      );
     case 'hr':
-      return <Text color={theme.subtle}>{'─'.repeat(40)}</Text>;
+      return <Text color={theme.inactive}>{'─'.repeat(40)}</Text>;
     case 'space':
-      // space token = blank line between paragraphs
       return null;
     case 'html':
       return <Text color={theme.inactive}>{token.text}</Text>;
     case 'table':
-      // Simplified table rendering
       return <Text color={theme.text}>{token.text || ''}</Text>;
     default:
       return <Text color={theme.text}>{token.text || ''}</Text>;
@@ -100,7 +108,8 @@ function renderInline(tokens: AnyToken[]): React.ReactNode {
       case 'em':
         return <Text key={i} italic color={theme.text}>{renderInline(tok.tokens || [{ type: 'text', text: tok.text }])}</Text>;
       case 'codespan':
-        return <Text key={i} color={theme.suggestion}>{tok.text}</Text>;
+        // Claude Code: codespan = permission color (blue-purple), NOT success green
+        return <Text key={i} color={theme.permission}>{tok.text}</Text>;
       case 'link':
         return <Text key={i} color={theme.suggestion}>{tok.text || tok.href}</Text>;
       case 'text':

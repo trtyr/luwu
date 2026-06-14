@@ -1,10 +1,15 @@
-// components/Spinner.tsx — Claude Code-style spinner (1:1 verb list from spinnerVerbs.ts)
+// components/Spinner.tsx — Claude Code 1:1 bouncing spinner
+// Source: docs/05-spinner-ui.md
+// Frames: ·✢✳✶✻✽ reversed = bouncing, 50ms interval
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
 import { MessageResponse } from './MessageResponse.js';
 
-// Exact verb list from Claude Code constants/spinnerVerbs.ts
+// Claude Code exact frames: DEFAULT + reversed DEFAULT = bouncing
+const SPINNER_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
+
+// Verb list from Claude Code constants/spinnerVerbs.ts
 const SPINNER_VERBS = [
   'Accomplishing','Actioning','Actualizing','Architecting','Baking','Beaming',
   "Beboppin'",'Befuddling','Billowing','Blanching','Bloviating','Boogieing',
@@ -58,9 +63,20 @@ interface Props {
 export function Spinner({ phase, verb }: Props) {
   const [mountVerb] = useState(() => pick(SPINNER_VERBS));
   const [tip] = useState(() => pick(TIPS));
+  const [frameIdx, setFrameIdx] = useState(0);
   const [thinkingStatus, setThinkingStatus] = useState<'thinking' | number | null>(null);
   const thinkingStartRef = useRef<number | null>(null);
 
+  // Bouncing animation — 50ms interval
+  useEffect(() => {
+    if (phase !== 'thinking') return;
+    const timer = setInterval(() => {
+      setFrameIdx(prev => (prev + 1) % SPINNER_FRAMES.length);
+    }, 50);
+    return () => clearInterval(timer);
+  }, [phase]);
+
+  // Thinking state machine — 2s minimum display + 2s duration display
   useEffect(() => {
     let durTimer: ReturnType<typeof setTimeout> | null = null;
     let clearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -88,13 +104,13 @@ export function Spinner({ phase, verb }: Props) {
 
   if (phase !== 'thinking' && thinkingStatus === null) return null;
 
-  // Random completion verb (from Claude Code turnCompletionVerbs.ts)
+  // Completion line — "Crunched for 2.4s"
   const completionVerb = pick(['Baked', 'Brewed', 'Churned', 'Cogitated', 'Cooked', 'Crunched', 'Sautéed', 'Worked']);
 
   if (phase !== 'thinking' && typeof thinkingStatus === 'number') {
     return (
       <Box minWidth={2} marginTop={1}>
-        <Text color={theme.claude}>✻ </Text>
+        <Text color={theme.claude}>{'✻ '}</Text>
         <Text color={theme.inactive}>{completionVerb} for </Text>
         <Text color={theme.text} bold>{(thinkingStatus / 1000).toFixed(1)}s</Text>
       </Box>
@@ -107,12 +123,12 @@ export function Spinner({ phase, verb }: Props) {
     <Box flexDirection="column" width="100%" alignItems="flex-start">
       <Box marginTop={1}>
         <Text>
-          <Text color={theme.claude}>✻ </Text>
+          <Text color={theme.claude}>{SPINNER_FRAMES[frameIdx]} </Text>
           <Text color={theme.text}>{effectiveVerb}…</Text>
         </Text>
       </Box>
       <MessageResponse>
-        <Text dimColor>{tip}</Text>
+        <Text color={theme.inactive}>{tip}</Text>
       </MessageResponse>
     </Box>
   );

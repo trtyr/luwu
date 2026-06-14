@@ -1,6 +1,6 @@
-// components/StatusLine.tsx — Claude Code-style status bar
-// Layout: [phase] model · cwd · git-branch · context%
-// Below: context-aware keyboard hint line with · separators
+// StatusLine — Claude Code 1:1 bottom bar
+// Source: docs/12-input-footer-ui.md, docs/16-input-box-detailed-ui.md §11
+// Layout: ❯ model · ? for shortcuts    (single line, dimColor)
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
@@ -12,45 +12,27 @@ interface StatusLineProps {
   contextPercent: number;
   phase: string;
   iteration?: number;
-  hasSuggestions?: boolean;
 }
 
-export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, iteration, hasSuggestions }: StatusLineProps) {
+export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, iteration }: StatusLineProps) {
   const ctxColor =
     contextPercent < 50 ? theme.success :
     contextPercent < 80 ? theme.warning :
     theme.error;
 
-  const phaseLabel =
-    phase === 'thinking' ? '✻ thinking' :
-    phase === 'streaming' ? '✻ streaming' :
-    phase === 'connecting' ? '✻ connecting' :
-    '✻ ready';
-
-  const phaseColor =
-    phase === 'thinking' || phase === 'streaming' ? theme.claude :
-    phase === 'connecting' ? theme.warning :
-    theme.inactive;
-
-  // Context-aware hint line (like Claude Code's PromptInputFooterLeftSide)
-  const hints: string[] = [];
-  if (phase === 'thinking' || phase === 'streaming') {
-    hints.push('esc to interrupt');
-  } else {
-    hints.push('? for shortcuts');
-    hints.push('↑↓ history');
-    hints.push('/ commands');
-  }
+  const hint = (phase === 'thinking' || phase === 'streaming')
+    ? 'esc to interrupt'
+    : '? for shortcuts · ↑↓ history · / commands';
 
   return (
     <Box flexDirection="column">
+      {/* Main line: ❯ model · cwd · git · context% */}
       <Box>
-        <Text color={phaseColor} bold>{phaseLabel} </Text>
+        <Text color={theme.permission}>{'❯ '}</Text>
+        <Text color={theme.inactive}>{model}</Text>
         {iteration !== undefined && iteration > 0 && (
-          <Text color={theme.subtle}>iter {iteration} </Text>
+          <Text color={theme.subtle}> · iter {iteration}</Text>
         )}
-        <Text color={theme.subtle}>· </Text>
-        <Text color={theme.claude}>{model}</Text>
         <Text color={theme.subtle}> · </Text>
         <Text color={theme.inactive}>{shortenPath(cwd)}</Text>
         {gitBranch && (
@@ -62,8 +44,9 @@ export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, itera
         <Text color={theme.subtle}> · </Text>
         <Text color={ctxColor}>{contextPercent}%</Text>
       </Box>
+      {/* Hint line */}
       <Box>
-        <Text dimColor>{hints.join(' · ')}</Text>
+        <Text color={theme.inactive}>{hint}</Text>
       </Box>
     </Box>
   );
