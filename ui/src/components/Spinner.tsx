@@ -4,7 +4,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
-import { MessageResponse } from './MessageResponse.js';
 
 // Claude Code exact frames: DEFAULT + reversed DEFAULT = bouncing
 const SPINNER_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
@@ -127,9 +126,9 @@ export function Spinner({ phase, verb }: Props) {
           <Text color={theme.text}>{effectiveVerb}…</Text>
         </Text>
       </Box>
-      <MessageResponse>
+      <Box paddingLeft={2}>
         <Text color={theme.inactive}>{tip}</Text>
-      </MessageResponse>
+      </Box>
     </Box>
   );
 }
