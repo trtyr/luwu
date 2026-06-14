@@ -1,5 +1,7 @@
 //! Luwu — terminal-native AI agent.
 //! Single binary: axum server (background) + Ink TUI (foreground).
+//! Supports concurrent instances: first instance starts the server,
+//! subsequent instances connect to the existing server and only run TUI.
 //! Use --headless for server-only mode.
 
 use luwu_core::SessionManager;
@@ -15,20 +17,24 @@ const TUI_BINARY: &[u8] = include_bytes!("../../../ui/dist/luwu-tui");
 /// Which mode are we in? Determines where logs go.
 /// Integrated → file only (terminal belongs to TUI).
 /// Headless   → stderr (terminal belongs to server).
+/// TuiOnly    → no server in this process, just a TUI client.
 static MODE: OnceLock<RunMode> = OnceLock::new();
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum RunMode {
     Integrated,
     Headless,
+    TuiOnly,
 }
+
+const LUWU_PORT: u16 = 51740;
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let headless = args.iter().any(|a| a == "--headless" || a == "--server");
 
-    // ── Config (errors go to stderr, safe in both modes) ──
+    // ── Config (errors go to stderr, safe in all modes) ──
     let config = match Config::load() {
         Ok(c) => c,
         Err(e) => {
@@ -42,11 +48,23 @@ async fn main() {
     };
 
     // ── Decide mode BEFORE init_tracing ──
+    let addr = SocketAddr::from(([127, 0, 0, 1], LUWU_PORT));
+
     #[cfg(tui_embedded)]
     let mode = if headless {
         RunMode::Headless
     } else {
-        RunMode::Integrated
+        // ── Concurrent instance support ──
+        // Check if a server is already running on LUWU_PORT.
+        // If yes → TuiOnly (just launch TUI, connect to existing server).
+        // If no  → Integrated (start server + TUI).
+        let server_running = tokio::net::TcpStream::connect(addr).await.is_ok();
+        if server_running {
+            tracing::info!("Server already running on {addr}, TUI-only mode");
+            RunMode::TuiOnly
+        } else {
+            RunMode::Integrated
+        }
     };
     #[cfg(not(tui_embedded))]
     let mode = RunMode::Headless;
@@ -55,6 +73,21 @@ async fn main() {
 
     init_tracing(&config.logging);
 
+    // ── TUI-only: skip server entirely ──
+    if mode == RunMode::TuiOnly {
+        #[cfg(tui_embedded)]
+        {
+            run_tui_only().await;
+            return;
+        }
+        #[cfg(not(tui_embedded))]
+        {
+            eprintln!("Server already running, but TUI not embedded. Use --headless.");
+            return;
+        }
+    }
+
+    // ── Resolve config ──
     let resolved = match config.resolve(None) {
         Ok(r) => r,
         Err(e) => {
@@ -104,12 +137,11 @@ async fn main() {
     };
 
     let app = luwu_server::app::router(state);
-    let addr = SocketAddr::from(([127, 0, 0, 1], 51740));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
             eprintln!("Failed to bind to {addr}: {e}");
-            eprintln!("Is another luwu instance running on port 51740?");
+            eprintln!("Is another luwu instance running on port {LUWU_PORT}?");
             std::process::exit(1);
         }
     };
@@ -128,9 +160,54 @@ async fn main() {
             }
         }
         RunMode::Headless => {}
+        RunMode::TuiOnly => unreachable!(),
     }
 
     run_headless(app, listener, addr, &resolved, recovered).await;
+}
+
+/// TUI-only mode: server is already running in another process.
+/// Just extract and spawn the TUI binary, then exit when it exits.
+#[cfg(tui_embedded)]
+async fn run_tui_only() {
+    tracing::info!("Starting in TUI-only mode (connecting to existing server)");
+
+    let temp_dir = std::env::temp_dir();
+    let tui_path = temp_dir.join(format!("luwu-tui-{}", std::process::id()));
+
+    if let Err(e) = std::fs::write(&tui_path, TUI_BINARY) {
+        tracing::error!("Failed to write TUI binary: {e}");
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&tui_path)
+            .map(|m| m.permissions())
+            .unwrap_or_else(|_| std::fs::Permissions::from_mode(0o755));
+        perms.set_mode(0o755);
+        let _ = std::fs::set_permissions(&tui_path, perms);
+    }
+
+    tracing::debug!("TUI binary extracted to {}", tui_path.display());
+
+    let mut child = match tokio::process::Command::new(&tui_path)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to spawn TUI: {e}");
+            let _ = std::fs::remove_file(&tui_path);
+            return;
+        }
+    };
+
+    let _ = child.wait().await;
+    let _ = std::fs::remove_file(&tui_path);
 }
 
 /// Integrated mode: server in background, TUI in foreground.
@@ -193,6 +270,15 @@ async fn run_integrated(app: axum::Router, listener: tokio::net::TcpListener) {
 
     let _ = child.wait().await;
     let _ = std::fs::remove_file(&tui_path);
+
+    // ── Shutdown decision ──
+    // The server-starter's TUI has exited. But other TUI clients may still
+    // be connected to the server. We keep the server alive briefly to let
+    // them finish, then shut down. If no other clients exist, the server
+    // shuts down immediately after the grace period.
+    tracing::info!("TUI exited, keeping server alive for 3s grace period...");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
     let _ = shutdown_tx.send(true);
     let _ = server_task.await;
 }
@@ -238,8 +324,8 @@ fn init_tracing(log: &LoggingConfig) {
     let mode = MODE.get().copied().unwrap_or(RunMode::Headless);
 
     match mode {
-        RunMode::Integrated => {
-            // ── Integrated: file ONLY, zero terminal output ──
+        RunMode::Integrated | RunMode::TuiOnly => {
+            // ── Integrated/TuiOnly: file ONLY, zero terminal output ──
             // Logs go to ~/.luwu/logs/luwu.log (daily rotated)
             let log_dir = dirs::home_dir()
                 .map(|h| h.join(".luwu").join("logs"))
@@ -257,7 +343,7 @@ fn init_tracing(log: &LoggingConfig) {
             };
             registry.with(file_layer).init();
 
-            tracing::info!("Logging to {} (integrated mode)", log_dir.display());
+            tracing::info!("Logging to {} ({:?} mode)", log_dir.display(), mode);
         }
         RunMode::Headless => {
             // ── Headless: stderr + optional file ──
