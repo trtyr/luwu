@@ -43,7 +43,7 @@ export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, itera
   }
 
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column">
       <Box>
         <Text color={phaseColor} bold>{phaseLabel} </Text>
         {iteration !== undefined && iteration > 0 && (
