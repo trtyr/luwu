@@ -207,9 +207,6 @@ export function App() {
 
       <Spinner phase={phase} verb={spinnerVerbRef.current} />
 
-      {phase === 'streaming' && (
-        <Box marginTop={0}><Text color={theme.claude}>▎</Text></Box>
-      )}
 
       <PromptInput
         onSubmit={sendMessage}
