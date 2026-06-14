@@ -6,7 +6,8 @@
 //! The handler's job is to call [`AgentService::run`] and map [`AgentEvent`]s
 //! to the wire format (SSE JSON, WebSocket frames, CLI output, etc.).
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -21,6 +22,51 @@ use crate::config::ResolvedConfig;
 use crate::handlers::workers::{
     run_consolidation_writer, run_observer_worker, run_reflector_worker,
 };
+
+// ---------------------------------------------------------------------------
+// SessionLog — lightweight per-session file logger
+// ---------------------------------------------------------------------------
+
+/// Writes structured log lines to `~/.luwu/sessions/{id}/agent.log`.
+///
+/// This is separate from the global tracing infrastructure (which handles
+/// daemon-level operational logs). Each session gets its own log file so
+/// you can look up what happened in a specific session by id.
+pub struct SessionLog {
+    path: PathBuf,
+}
+
+impl SessionLog {
+    pub fn new(session_dir: &Path) -> Self {
+        let path = session_dir.join("agent.log");
+        Self { path }
+    }
+
+    /// Append a log line. Best-effort — silently ignores IO errors.
+    pub fn log(&self, level: &str, msg: &str) {
+        let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let line = format!("{ts} {level} {msg}\n");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+
+    pub fn info(&self, msg: &str) {
+        self.log("INFO", msg);
+    }
+
+    pub fn warn(&self, msg: &str) {
+        self.log("WARN", msg);
+    }
+
+    pub fn error(&self, msg: &str) {
+        self.log("ERROR", msg);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AgentEvent — enriched events emitted by the service
@@ -64,6 +110,7 @@ pub struct AgentService {
     session_id: String,
     working_dir: PathBuf,
     file_history: Arc<tokio::sync::Mutex<luwu_core::file_history::FileHistory>>,
+    session_log: SessionLog,
 }
 
 impl AgentService {
@@ -90,6 +137,7 @@ impl AgentService {
         let file_history = Arc::new(tokio::sync::Mutex::new(
             luwu_core::file_history::FileHistory::new(&session_dir, &working_dir),
         ));
+        let session_log = SessionLog::new(&session_dir);
 
         let tools = builtin_tool_registry().with_file_history(file_history.clone());
         let events = EventBus::new(256);
@@ -101,6 +149,11 @@ impl AgentService {
             working_dir.clone(),
         );
 
+        session_log.info(&format!(
+            "AgentService created — model={}, session={}",
+            resolved.model, session_id
+        ));
+
         Self {
             state,
             engine,
@@ -110,6 +163,7 @@ impl AgentService {
             session_id,
             working_dir,
             file_history,
+            session_log,
         }
     }
 
@@ -134,6 +188,10 @@ impl AgentService {
     ) -> mpsc::Receiver<AgentEvent> {
         let (tx, rx) = mpsc::channel::<AgentEvent>(128);
 
+        let msg_preview: String = user_message.chars().take(80).collect();
+        self.session_log
+            .info(&format!("Turn started — msg=\"{msg_preview}\""));
+
         // ── Correction detection ──
         {
             let mut detector = CorrectionDetector::new();
@@ -144,6 +202,8 @@ impl AgentService {
                     CorrectionPattern::Weak => "疑似纠错",
                 };
                 let entry = format!("[{}] {}", label, correction.full_message);
+                self.session_log
+                    .warn(&format!("Correction detected: {label}"));
                 let mem = self.memory.clone();
                 self.state.spawn_worker(async move {
                     if let Err(e) = mem.append_correction(&entry) {
@@ -182,6 +242,7 @@ impl AgentService {
         let session_id = self.session_id;
         let working_dir = self.working_dir;
         let user_msg_for_session = user_message;
+        let session_log = self.session_log;
 
         tokio::spawn(async move {
             let mut rx = event_rx;
@@ -198,6 +259,14 @@ impl AgentService {
                         ..
                     } => {
                         cycle.add_tokens(usage.total_tokens as usize);
+
+                        session_log.info(&format!(
+                            "Turn done — tokens={}/{}/{} text_len={}",
+                            usage.prompt_tokens,
+                            usage.completion_tokens,
+                            usage.total_tokens,
+                            assistant_text.len()
+                        ));
 
                         // Persist messages to session for multi-turn.
                         let sessions_c = sessions.clone();
@@ -233,13 +302,27 @@ impl AgentService {
                                 .iter()
                                 .map(|n| n.file_type.label().to_string())
                                 .collect::<Vec<_>>();
+                            session_log
+                                .info(&format!("Consolidation triggered — files={:?}", files));
                             let _ = tx.send(AgentEvent::Consolidation { files }).await;
                         }
                         break;
                     }
-                    TurnEvent::ToolCompleted { .. } => {
+                    TurnEvent::ToolCompleted {
+                        call_id, output, ..
+                    } => {
+                        let preview: String = output.chars().take(100).collect();
+                        session_log.info(&format!(
+                            "Tool completed — call_id={call_id} result=\"{preview}\""
+                        ));
+
                         if let CycleAction::Checkpoint = cycle.add_tool_call() {
                             cycle.mark_tool_call_checkpoint();
+
+                            session_log.info(&format!(
+                                "Tool checkpoint — tool_calls={}",
+                                cycle.tool_usage()
+                            ));
 
                             // Deterministic compaction — zero LLM cost.
                             let det_summary = compile_summary(&messages_for_workers, &working_dir);
@@ -266,7 +349,14 @@ impl AgentService {
                                 .await;
                         }
                     }
-                    TurnEvent::Cancelled | TurnEvent::Error { .. } => break,
+                    TurnEvent::Cancelled => {
+                        session_log.warn("Turn cancelled");
+                        break;
+                    }
+                    TurnEvent::Error { message } => {
+                        session_log.error(&format!("Turn error: {message}"));
+                        break;
+                    }
                     _ => {}
                 }
 
@@ -275,6 +365,11 @@ impl AgentService {
                     CycleAction::Checkpoint => {
                         let pct = cycle.usage_pct();
                         cycle.mark_checkpoint(pct);
+
+                        session_log.info(&format!(
+                            "Cycle checkpoint — cycle={} usage={pct}%",
+                            cycle.cycle_index
+                        ));
 
                         let wm = memory.clone();
                         let prov = provider.clone();
@@ -302,6 +397,8 @@ impl AgentService {
                             .await;
                     }
                     CycleAction::Rebuild => {
+                        session_log.info(&format!("Cycle rebuild — cycle={}", cycle.cycle_index));
+
                         let refl_memory = memory.clone();
                         let prov = provider.clone();
                         let mdl = resolved.model.clone();

@@ -225,13 +225,12 @@ impl Tool for GrepTool {
                 return None;
             }
             // Parse multi-extension patterns like *.{ts,tsx}
-            if let Some(exts) = g
-                .strip_prefix("*.{")
-                .and_then(|s| s.strip_suffix('}'))
-            {
+            if let Some(exts) = g.strip_prefix("*.{").and_then(|s| s.strip_suffix('}')) {
                 let ext_list: Vec<&str> = exts.split(',').map(|e| e.trim()).collect();
                 return Some(Box::new(move |path: &str| {
-                    ext_list.iter().any(|ext| path.ends_with(&format!(".{ext}")))
+                    ext_list
+                        .iter()
+                        .any(|ext| path.ends_with(&format!(".{ext}")))
                 }) as Box<dyn Fn(&str) -> bool>);
             }
             // Single extension: *.rs → check .rs suffix
@@ -252,9 +251,10 @@ impl Tool for GrepTool {
 
             // Apply glob filter.
             if let Some(ref matcher) = glob_matcher
-                && !matcher(&file_path) {
-                    continue;
-                }
+                && !matcher(&file_path)
+            {
+                continue;
+            }
             filtered_count += 1;
 
             let line_content = if gm.line_content.len() > MAX_LINE_LENGTH {
@@ -360,9 +360,10 @@ fn get_or_create_picker(canonical: &PathBuf) -> SharedFilePicker {
 
         // Double-check after acquiring write lock (another thread may have rebuilt).
         if let Some(entry) = guard.get(canonical)
-            && !is_index_stale(canonical, entry.built_at) {
-                return entry.picker.clone();
-            }
+            && !is_index_stale(canonical, entry.built_at)
+        {
+            return entry.picker.clone();
+        }
 
         // Build a fresh picker.
         let shared = SharedFilePicker::default();
@@ -420,9 +421,10 @@ fn is_index_stale(dir: &PathBuf, built_at: SystemTime) -> bool {
     // Check the directory's own mtime — catches new file creation.
     if let Ok(metadata) = std::fs::metadata(dir)
         && let Ok(dir_mtime) = metadata.modified()
-            && dir_mtime > built_at {
-                return true;
-            }
+        && dir_mtime > built_at
+    {
+        return true;
+    }
 
     // Also check a few common subdirectories (crate dirs, src dirs).
     // This catches files added to subdirectories where the top-level mtime didn't change.
@@ -430,10 +432,11 @@ fn is_index_stale(dir: &PathBuf, built_at: SystemTime) -> bool {
         for entry in entries.flatten() {
             if entry.path().is_dir()
                 && let Ok(metadata) = entry.metadata()
-                    && let Ok(mtime) = metadata.modified()
-                        && mtime > built_at {
-                            return true;
-                        }
+                && let Ok(mtime) = metadata.modified()
+                && mtime > built_at
+            {
+                return true;
+            }
             // Stop after checking first few entries for performance.
             break;
         }
@@ -443,9 +446,10 @@ fn is_index_stale(dir: &PathBuf, built_at: SystemTime) -> bool {
     // This catches cases where mtime doesn't change (e.g. file content edits).
     // But limit frequency to prevent thrashing.
     if let Ok(elapsed) = built_at.elapsed()
-        && elapsed.as_secs() > 60 {
-            return true;
-        }
+        && elapsed.as_secs() > 60
+    {
+        return true;
+    }
 
     false
 }

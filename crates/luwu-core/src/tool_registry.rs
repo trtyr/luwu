@@ -37,7 +37,10 @@ impl ToolRegistry {
     /// Attach a file history for rewind support.
     /// Once attached, all write/edit tool calls will be intercepted to
     /// back up the original file before execution.
-    pub fn with_file_history(mut self, fh: Arc<tokio::sync::Mutex<crate::file_history::FileHistory>>) -> Self {
+    pub fn with_file_history(
+        mut self,
+        fh: Arc<tokio::sync::Mutex<crate::file_history::FileHistory>>,
+    ) -> Self {
         self.file_history = Some(fh);
         self
     }
@@ -87,15 +90,15 @@ impl ToolRegistry {
             .ok_or_else(|| crate::error::LuwuError::Tool(format!("Unknown tool: {name}")))?;
 
         // ── File history: back up files before write/edit ──
-        if let Some(fh) = &self.file_history {
-            if let Some(file_path) = extract_file_path(name, &input) {
-                let fh = fh.clone();
-                // Use try_lock — don't block the agent if history is being read
-                if let Ok(mut guard) = fh.try_lock() {
-                    if let Err(e) = guard.track_edit(&file_path, &session_id.0) {
-                        tracing::warn!(error = %e, file = %file_path, "File history track_edit failed");
-                    }
-                }
+        if let Some(fh) = &self.file_history
+            && let Some(file_path) = extract_file_path(name, &input)
+        {
+            let fh = fh.clone();
+            // Use try_lock — don't block the agent if history is being read
+            if let Ok(mut guard) = fh.try_lock()
+                && let Err(e) = guard.track_edit(&file_path, &session_id.0)
+            {
+                tracing::warn!(error = %e, file = %file_path, "File history track_edit failed");
             }
         }
 
@@ -264,13 +267,19 @@ mod tests {
     #[test]
     fn extract_file_path_write() {
         let input = serde_json::json!({"path": "src/main.rs", "content": "fn main() {}"});
-        assert_eq!(extract_file_path("write", &input), Some("src/main.rs".to_string()));
+        assert_eq!(
+            extract_file_path("write", &input),
+            Some("src/main.rs".to_string())
+        );
     }
 
     #[test]
     fn extract_file_path_edit() {
         let input = serde_json::json!({"path": "src/lib.rs", "old_text": "a", "new_text": "b"});
-        assert_eq!(extract_file_path("edit", &input), Some("src/lib.rs".to_string()));
+        assert_eq!(
+            extract_file_path("edit", &input),
+            Some("src/lib.rs".to_string())
+        );
     }
 
     #[test]
@@ -282,6 +291,9 @@ mod tests {
     #[test]
     fn extract_file_path_file_path_key() {
         let input = serde_json::json!({"file_path": "src/util.rs"});
-        assert_eq!(extract_file_path("write", &input), Some("src/util.rs".to_string()));
+        assert_eq!(
+            extract_file_path("write", &input),
+            Some("src/util.rs".to_string())
+        );
     }
 }

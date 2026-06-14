@@ -212,11 +212,7 @@ impl Tool for TodoTool {
                         "in_progress" => TaskStatus::InProgress,
                         "completed" => TaskStatus::Completed,
                         "deleted" => TaskStatus::Deleted,
-                        _ => {
-                            return Ok(ToolOutput::error(format!(
-                                "Unknown status: {status}"
-                            )))
-                        }
+                        _ => return Ok(ToolOutput::error(format!("Unknown status: {status}"))),
                     };
                     changes.push(format!("status → {status}"));
                 }
@@ -295,10 +291,7 @@ impl Tool for TodoTool {
                     } else {
                         format!(" (blocked by {:?})", t.blocked_by)
                     };
-                    lines.push(format!(
-                        "  {marker} #{:<3} {}{}",
-                        t.id, t.subject, blockers
-                    ));
+                    lines.push(format!("  {marker} #{:<3} {}{}", t.id, t.subject, blockers));
                 }
                 lines.push(format!(
                     "\n{} task{} total.",

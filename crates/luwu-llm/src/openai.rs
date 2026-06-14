@@ -97,23 +97,56 @@ impl LlmProvider for OpenAiProvider {
         request: LlmRequest,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<LlmEvent>>> {
         let body = build_request_body(&request)?;
-        let _llm_start = std::time::Instant::now();
         info!(model = %request.model, messages = request.messages.len(), "LLM stream request");
 
-        let request = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .header("Content-Type", "application/json")
-            .json(&body);
-
-        let resp = crate::retry::send_with_retry(&request).await?;
-
         let (tx, rx) = tokio::sync::mpsc::channel(128);
-        let event_stream = Box::pin(sse::parse_sse_stream(resp));
+
+        let client = self.client.clone();
+        let api_key = self.api_key.clone();
+        let base_url = self.base_url.clone();
 
         tokio::spawn(async move {
-            consume_stream(event_stream, tx).await;
+            const MAX_STREAM_ATTEMPTS: u32 = 3;
+
+            for attempt in 1..=MAX_STREAM_ATTEMPTS {
+                let request = client
+                    .post(format!("{base_url}/chat/completions"))
+                    .bearer_auth(&api_key)
+                    .header("Content-Type", "application/json")
+                    .json(&body);
+
+                let resp = match crate::retry::send_with_retry(&request).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = tx.send(Err(e.into())).await;
+                        return;
+                    }
+                };
+
+                let event_stream = Box::pin(sse::parse_sse_stream(resp));
+                let outcome = consume_stream(event_stream, &tx).await;
+
+                match outcome {
+                    StreamOutcome::Completed => return,
+                    StreamOutcome::StalledNoData if attempt < MAX_STREAM_ATTEMPTS => {
+                        let delay_secs = 1u64 << (attempt - 1); // 1s, 2s
+                        tracing::warn!(
+                            attempt,
+                            max_attempts = MAX_STREAM_ATTEMPTS,
+                            delay_secs,
+                            "SSE stream stalled before any data — retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                        continue;
+                    }
+                    StreamOutcome::StalledNoData => {
+                        tracing::warn!("SSE stream stalled after all retries exhausted");
+                        let _ = tx.send(Err(LlmError::Timeout.into())).await;
+                        return;
+                    }
+                    StreamOutcome::StalledPartial | StreamOutcome::Errored => return,
+                }
+            }
         });
 
         Ok(rx)
@@ -124,28 +157,56 @@ impl LlmProvider for OpenAiProvider {
 // Stream consumer — turns SSE events into LlmEvents
 // ---------------------------------------------------------------------------
 
+/// Outcome of consuming an SSE stream — used by the retry loop in `stream()`.
+enum StreamOutcome {
+    /// Stream completed normally (received Done or stream ended).
+    Completed,
+    /// Stream stalled (timeout) before any data was received.
+    /// Safe to retry — no events were sent through the channel.
+    StalledNoData,
+    /// Stream stalled after partial data was received.
+    /// NOT safe to retry — caller already received some events.
+    StalledPartial,
+    /// Stream errored out (error event already sent through channel).
+    Errored,
+}
+
+/// Stall timeout — how long to wait for the next SSE event before giving up.
+///
+/// 60 seconds is generous enough for reasoning models (GLM-4.7, o3) that
+/// may spend significant time "thinking" before emitting the first token,
+/// while still catching genuinely stalled connections.
+const STALL_TIMEOUT_SECS: u64 = 60;
+
 async fn consume_stream(
     mut event_stream: std::pin::Pin<
         Box<dyn futures::Stream<Item = std::result::Result<sse::SseEvent, reqwest::Error>> + Send>,
     >,
-    tx: tokio::sync::mpsc::Sender<Result<LlmEvent>>,
-) {
+    tx: &tokio::sync::mpsc::Sender<Result<LlmEvent>>,
+) -> StreamOutcome {
     // Accumulate partial tool calls across chunks.
     let mut pending_tool_calls: HashMap<String, PartialToolCall> = HashMap::new();
+    let mut received_data = false;
 
     loop {
-        let result =
-            match tokio::time::timeout(std::time::Duration::from_secs(30), event_stream.next())
-                .await
-            {
-                Ok(Some(r)) => r,
-                Ok(None) => break, // stream ended normally
-                Err(_) => {
-                    // LLM stalled mid-stream — 30s with no data
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(STALL_TIMEOUT_SECS),
+            event_stream.next(),
+        )
+        .await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => return StreamOutcome::Completed, // stream ended normally
+            Err(_) => {
+                // LLM stalled mid-stream
+                return if received_data {
                     let _ = tx.send(Err(LlmError::Timeout.into())).await;
-                    break;
-                }
-            };
+                    StreamOutcome::StalledPartial
+                } else {
+                    StreamOutcome::StalledNoData
+                };
+            }
+        };
 
         let sse_event = match result {
             Ok(e) => e,
@@ -155,7 +216,7 @@ async fn consume_stream(
                         LlmError::Stream(format!("SSE stream error: {e}")).into()
                     ))
                     .await;
-                break;
+                return StreamOutcome::Errored;
             }
         };
 
@@ -175,6 +236,7 @@ async fn consume_stream(
             if let Some(content) = &delta.content
                 && !content.is_empty()
             {
+                received_data = true;
                 let _ = tx.send(Ok(LlmEvent::TextDelta(content.clone()))).await;
             }
 
@@ -182,6 +244,7 @@ async fn consume_stream(
             if let Some(reasoning) = &delta.reasoning_content
                 && !reasoning.is_empty()
             {
+                received_data = true;
                 let _ = tx
                     .send(Ok(LlmEvent::ReasoningDelta(reasoning.clone())))
                     .await;
@@ -204,6 +267,7 @@ async fn consume_stream(
                     if let Some(name) = tc.function.name {
                         entry.name = name;
                         // Emit ToolCallBegin when we first learn the name.
+                        received_data = true;
                         let _ = tx
                             .send(Ok(LlmEvent::ToolCallBegin {
                                 id: entry.id.clone(),
@@ -213,6 +277,7 @@ async fn consume_stream(
                     }
                     if let Some(args_delta) = tc.function.arguments {
                         entry.arguments.push_str(&args_delta);
+                        received_data = true;
                         let _ = tx
                             .send(Ok(LlmEvent::ToolCallDelta {
                                 id: entry.id.clone(),
@@ -236,6 +301,7 @@ async fn consume_stream(
 
         // Usage info is sometimes in the final chunk.
         if let Some(usage) = chunk.usage {
+            received_data = true;
             let event = LlmEvent::Done(LlmUsage {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,

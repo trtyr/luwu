@@ -38,7 +38,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     /// Create a new provider with an API key and the default base URL.
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self::with_base_url(api_key, "https://api.anthropic.com/v1")
+        Self::with_base_url(api_key, "https://api.anthropic.com")
     }
 
     /// Create a provider with a custom base URL.
@@ -89,24 +89,57 @@ impl LlmProvider for AnthropicProvider {
         request: LlmRequest,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<LlmEvent>>> {
         let body = build_request_body(&request)?;
-        let _llm_start = std::time::Instant::now();
         info!(model = %request.model, messages = request.messages.len(), "LLM stream request");
 
-        let request = self
-            .client
-            .post(format!("{}/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
-            .json(&body);
-
-        let resp = crate::retry::send_with_retry(&request).await?;
-
         let (tx, rx) = tokio::sync::mpsc::channel(128);
-        let event_stream = Box::pin(sse::parse_sse_stream(resp));
+
+        let client = self.client.clone();
+        let api_key = self.api_key.clone();
+        let base_url = self.base_url.clone();
 
         tokio::spawn(async move {
-            consume_stream(event_stream, tx).await;
+            const MAX_STREAM_ATTEMPTS: u32 = 3;
+
+            for attempt in 1..=MAX_STREAM_ATTEMPTS {
+                let request = client
+                    .post(format!("{base_url}/messages"))
+                    .header("x-api-key", &api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("Content-Type", "application/json")
+                    .json(&body);
+
+                let resp = match crate::retry::send_with_retry(&request).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = tx.send(Err(e.into())).await;
+                        return;
+                    }
+                };
+
+                let event_stream = Box::pin(sse::parse_sse_stream(resp));
+                let outcome = consume_stream(event_stream, &tx).await;
+
+                match outcome {
+                    StreamOutcome::Completed => return,
+                    StreamOutcome::StalledNoData if attempt < MAX_STREAM_ATTEMPTS => {
+                        let delay_secs = 1u64 << (attempt - 1); // 1s, 2s
+                        tracing::warn!(
+                            attempt,
+                            max_attempts = MAX_STREAM_ATTEMPTS,
+                            delay_secs,
+                            "SSE stream stalled before any data — retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                        continue;
+                    }
+                    StreamOutcome::StalledNoData => {
+                        tracing::warn!("SSE stream stalled after all retries exhausted");
+                        let _ = tx.send(Err(LlmError::Timeout.into())).await;
+                        return;
+                    }
+                    StreamOutcome::StalledPartial | StreamOutcome::Errored => return,
+                }
+            }
         });
 
         Ok(rx)
@@ -117,28 +150,55 @@ impl LlmProvider for AnthropicProvider {
 // Stream consumer — turns Anthropic SSE events into LlmEvents
 // ---------------------------------------------------------------------------
 
+/// Outcome of consuming an SSE stream — used by the retry loop in `stream()`.
+enum StreamOutcome {
+    /// Stream completed normally (received Done or stream ended).
+    Completed,
+    /// Stream stalled (timeout) before any data was received.
+    /// Safe to retry — no events were sent through the channel.
+    StalledNoData,
+    /// Stream stalled after partial data was received.
+    /// NOT safe to retry — caller already received some events.
+    StalledPartial,
+    /// Stream errored out (error event already sent through channel).
+    Errored,
+}
+
+/// Stall timeout — how long to wait for the next SSE event before giving up.
+///
+/// 60 seconds is generous enough for reasoning models that may spend
+/// significant time "thinking" before emitting the first token.
+const STALL_TIMEOUT_SECS: u64 = 60;
+
 async fn consume_stream(
     mut event_stream: std::pin::Pin<
         Box<dyn futures::Stream<Item = std::result::Result<sse::SseEvent, reqwest::Error>> + Send>,
     >,
-    tx: tokio::sync::mpsc::Sender<Result<LlmEvent>>,
-) {
+    tx: &tokio::sync::mpsc::Sender<Result<LlmEvent>>,
+) -> StreamOutcome {
     // Accumulate tool call arguments across content_block_delta events.
     let mut active_tool_calls: HashMap<String, PartialToolCall> = HashMap::new();
+    let mut received_data = false;
 
     loop {
-        let result =
-            match tokio::time::timeout(std::time::Duration::from_secs(30), event_stream.next())
-                .await
-            {
-                Ok(Some(r)) => r,
-                Ok(None) => break, // stream ended normally
-                Err(_) => {
-                    // LLM stalled mid-stream — 30s with no data
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(STALL_TIMEOUT_SECS),
+            event_stream.next(),
+        )
+        .await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => return StreamOutcome::Completed, // stream ended normally
+            Err(_) => {
+                // LLM stalled mid-stream
+                return if received_data {
                     let _ = tx.send(Err(LlmError::Timeout.into())).await;
-                    break;
-                }
-            };
+                    StreamOutcome::StalledPartial
+                } else {
+                    StreamOutcome::StalledNoData
+                };
+            }
+        };
 
         let sse_event = match result {
             Ok(e) => e,
@@ -151,7 +211,7 @@ async fn consume_stream(
                 {
                     tracing::warn!(%send_err, "Failed to send SSE error event");
                 }
-                break;
+                return StreamOutcome::Errored;
             }
         };
 
@@ -170,12 +230,14 @@ async fn consume_stream(
                 match delta.delta {
                     DeltaType::TextDelta { text } => {
                         if !text.is_empty() {
+                            received_data = true;
                             let _ = tx.send(Ok(LlmEvent::TextDelta(text))).await;
                         }
                     }
                     DeltaType::InputJsonDelta { partial_json } => {
                         if let Some(tc) = active_tool_calls.get_mut(&delta.index.to_string()) {
                             tc.arguments.push_str(&partial_json);
+                            received_data = true;
                             let _ = tx
                                 .send(Ok(LlmEvent::ToolCallDelta {
                                     id: tc.id.clone(),
@@ -205,6 +267,7 @@ async fn consume_stream(
                             arguments: String::new(),
                         },
                     );
+                    received_data = true;
                     let _ = tx.send(Ok(LlmEvent::ToolCallBegin { id, name })).await;
                 }
             }
@@ -242,6 +305,7 @@ async fn consume_stream(
                 };
 
                 if let Some(usage) = msg_delta.usage {
+                    received_data = true;
                     let _ = tx
                         .send(Ok(LlmEvent::Done(LlmUsage {
                             prompt_tokens: 0, // Anthropic sends output_tokens here

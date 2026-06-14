@@ -128,11 +128,11 @@ impl FileHistory {
         let relative = self.make_relative(file_path);
 
         // Check if already tracked in latest snapshot
-        if let Some(latest) = self.state.snapshots.last() {
-            if latest.tracked_file_backups.contains_key(&relative) {
-                // Already backed up — don't overwrite v1
-                return Ok(());
-            }
+        if let Some(latest) = self.state.snapshots.last()
+            && latest.tracked_file_backups.contains_key(&relative)
+        {
+            // Already backed up — don't overwrite v1
+            return Ok(());
         }
 
         let abs_path = self.working_dir.join(&relative);
@@ -172,7 +172,9 @@ impl FileHistory {
             let needs_backup = match self.latest_backup_for(file_path) {
                 Some(existing) => {
                     // Compare mtime — if file is newer than backup, re-backup
-                    let bp = existing.backup_file_name.as_ref()
+                    let bp = existing
+                        .backup_file_name
+                        .as_ref()
                         .map(|n| self.backup_path(n));
                     match (bp, fs::metadata(&abs_path)) {
                         (Some(bpath), Ok(orig)) => match fs::metadata(&bpath) {
@@ -232,7 +234,7 @@ impl FileHistory {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("Snapshot not found for message: {message_ref}"),
-                ))
+                ));
             }
         };
 
@@ -256,8 +258,8 @@ impl FileHistory {
             let abs_path = self.working_dir.join(file_path);
             let backup_name = backup.backup_file_name.as_ref();
 
-            let backup_content = backup_name
-                .and_then(|name| fs::read_to_string(self.backup_path(name)).ok());
+            let backup_content =
+                backup_name.and_then(|name| fs::read_to_string(self.backup_path(name)).ok());
 
             let current_content = fs::read_to_string(&abs_path).ok();
 
@@ -359,7 +361,11 @@ impl FileHistory {
                         #[cfg(unix)]
                         {
                             use std::os::unix::fs::PermissionsExt;
-                            fs::set_permissions(&abs_path, fs::Permissions::from_mode(meta.permissions().mode())).ok();
+                            fs::set_permissions(
+                                &abs_path,
+                                fs::Permissions::from_mode(meta.permissions().mode()),
+                            )
+                            .ok();
                         }
                     }
 
@@ -380,10 +386,7 @@ impl FileHistory {
             }
         }
 
-        tracing::info!(
-            files_changed = changed.len(),
-            "Rewind applied snapshot"
-        );
+        tracing::info!(files_changed = changed.len(), "Rewind applied snapshot");
         Ok(changed)
     }
 
@@ -401,7 +404,11 @@ impl FileHistory {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        fs::set_permissions(&backup_path, fs::Permissions::from_mode(meta.permissions().mode())).ok();
+                        fs::set_permissions(
+                            &backup_path,
+                            fs::Permissions::from_mode(meta.permissions().mode()),
+                        )
+                        .ok();
                     }
                 }
 
@@ -447,9 +454,9 @@ impl FileHistory {
     fn check_file_changed(&self, original: &Path, backup: &Path) -> io::Result<bool> {
         // Quick checks: existence, size
         match (fs::metadata(original), fs::metadata(backup)) {
-            (Err(_), Ok(_)) => return Ok(true),  // original missing, backup exists
-            (Ok(_), Err(_)) => return Ok(true),  // original exists, backup missing
-            (Err(_), Err(_)) => return Ok(false),
+            (Err(_), Ok(_)) => Ok(true), // original missing, backup exists
+            (Ok(_), Err(_)) => Ok(true), // original exists, backup missing
+            (Err(_), Err(_)) => Ok(false),
             (Ok(orig), Ok(bak)) => {
                 if orig.len() != bak.len() {
                     return Ok(true);
@@ -475,8 +482,7 @@ impl FileHistory {
     }
 
     fn persist(&self) -> io::Result<()> {
-        let json = serde_json::to_string_pretty(&self.state)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(&self.state).map_err(|e| io::Error::other(e))?;
         fs::write(&self.state_path, json)?;
         Ok(())
     }
