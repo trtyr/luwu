@@ -7,6 +7,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(tui_embedded)");
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let ui_dir = manifest_dir.join("../../ui");
     let dist_dir = ui_dir.join("dist");
@@ -37,12 +38,13 @@ fn main() {
     let _ = std::fs::create_dir_all(&dist_dir);
 
     // bun build --compile → standalone executable with bun runtime embedded
+    // --minify strips whitespace/variables
     let status = Command::new(&bun)
         .args([
             "build", "src/index.tsx",
             "--compile",
+            "--minify",
             "--outfile", "dist/luwu-tui",
-            "--external", "react-devtools-core",
         ])
         .current_dir(&ui_dir)
         .status();
@@ -64,7 +66,6 @@ fn main() {
 }
 
 fn find_bun() -> Option<String> {
-    // Check PATH for bun
     let out = Command::new("which").arg("bun").output().ok()?;
     if !out.status.success() { return None; }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
