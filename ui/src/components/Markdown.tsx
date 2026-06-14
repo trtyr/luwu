@@ -1,13 +1,12 @@
 // Markdown renderer for Ink TUI
 // Based on Claude Code's formatToken (markdown.ts):
-// - code: plain text (no fence, no color unless syntax highlighting)
-// - blockquote: ▎ BLOCKQUOTE_BAR prefix + italic (NOT dim — "chalk.dim nearly invisible on dark themes")
-// - codespan: permission color (rgb(177,185,249) blue-purple), NOT success green
-// - strikethrough: DISABLED (model uses ~ for "approximate")
-// - dimColor prop: when true, all content uses theme.inactive instead of theme.text
-// - SPACING: Only structural blocks (code/list/blockquote/heading) get marginTop.
-//   Consecutive paragraphs flow naturally with NO extra blank line.
-//   Space tokens are filtered out entirely.
+// - code: plain text (no fence, no color)
+// - blockquote: ▎ prefix + italic
+// - codespan: permission color
+// - strikethrough: DISABLED
+// - dimColor prop: theme.inactive instead of theme.text
+// - SPACING: paragraphs share the same Text block, separated by \n only.
+//   Structural blocks (code/list/blockquote/heading) get their own Box with marginTop.
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
@@ -33,7 +32,7 @@ interface MarkdownProps {
   dimColor?: boolean;
 }
 
-// Block types that need spacing before them
+// Structural blocks that need their own Box with marginTop
 const STRUCTURAL_TYPES = new Set(['heading', 'code', 'list', 'blockquote', 'hr', 'table']);
 
 export function Markdown({ children, dimColor = false }: MarkdownProps) {
@@ -41,7 +40,7 @@ export function Markdown({ children, dimColor = false }: MarkdownProps) {
     const trimmed = children.replace(/^\n+/, '').replace(/\n+$/, '');
     if (!trimmed) return [];
     if (!hasMarkdownSyntax(trimmed)) {
-      return [{ type: 'paragraph', raw: trimmed, text: trimmed, tokens: [{ type: 'text', raw: trimmed, text: trimmed }] }];
+      return [{ type: 'text', raw: trimmed, text: trimmed, tokens: [{ type: 'text', raw: trimmed, text: trimmed }] }];
     }
     ensureMarkedConfig();
     return marked.lexer(trimmed);
@@ -50,18 +49,47 @@ export function Markdown({ children, dimColor = false }: MarkdownProps) {
   const tc = dimColor ? theme.inactive : theme.text;
   const cc = dimColor ? theme.inactive : theme.permission;
 
-  // Filter out space tokens — they cause double-spacing with marginTop
-  const contentTokens = tokens.filter((t: AnyToken) => t.type !== 'space');
+  // Group consecutive paragraphs into a single rendered block
+  // so they flow as continuous text separated by blank lines (from \n\n in content)
+  const groups: { type: 'paragraph-group' | string; tokens: AnyToken[] }[] = [];
+  let paraBuffer: AnyToken[] = [];
+
+  for (const tok of tokens) {
+    if (tok.type === 'space') continue; // skip spaces entirely
+    if (tok.type === 'paragraph') {
+      paraBuffer.push(tok);
+    } else {
+      if (paraBuffer.length > 0) {
+        groups.push({ type: 'paragraph-group', tokens: paraBuffer });
+        paraBuffer = [];
+      }
+      groups.push({ type: tok.type, tokens: [tok] });
+    }
+  }
+  if (paraBuffer.length > 0) {
+    groups.push({ type: 'paragraph-group', tokens: paraBuffer });
+  }
 
   return (
     <Box flexDirection="column">
-      {contentTokens.map((tok: AnyToken, i: number) => {
-        // Only add marginTop before structural blocks (code, list, heading, etc.)
-        // NOT between consecutive paragraphs — they flow naturally
-        const needsSpace = i > 0 && STRUCTURAL_TYPES.has(tok.type);
+      {groups.map((group, i) => {
+        const needsSpace = i > 0;
         return (
           <Box key={i} marginTop={needsSpace ? 1 : 0}>
-            <TokenRenderer token={tok} tc={tc} cc={cc} dimColor={dimColor} />
+            {group.type === 'paragraph-group' ? (
+              // Render all paragraphs as a single continuous text block
+              // Each paragraph separated by \n (not \n\n — the marginTop handles spacing)
+              <Text color={tc}>
+                {group.tokens.map((ptok: AnyToken, pi: number) => (
+                  <React.Fragment key={pi}>
+                    {pi > 0 ? '\n' : ''}
+                    {renderInline(ptok.tokens || [{ type: 'text', text: ptok.text }], tc, cc)}
+                  </React.Fragment>
+                ))}
+              </Text>
+            ) : (
+              <TokenRenderer token={group.tokens[0]} tc={tc} cc={cc} dimColor={dimColor} />
+            )}
           </Box>
         );
       })}
@@ -81,16 +109,13 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
     }
     case 'code':
       return <Text color={tc}>{token.text}</Text>;
-    case 'paragraph':
-      return <Text color={tc}>{renderInline(token.tokens || [{ type: 'text', text: token.text }], tc, cc)}</Text>;
     case 'list': {
       const items = token.items || [];
       return (
         <Box flexDirection="column">
           {items.map((item: AnyToken, i: number) => (
             <Box key={i} flexDirection="row">
-              <Text>{'  '.repeat(token.depth || 0)}</Text>
-              <Text color={tc}>{token.ordered ? `${i + 1}. ` : '- '}</Text>
+              <Text color={tc}>{'  '.repeat(token.depth || 0)}{token.ordered ? `${i + 1}. ` : '- '}</Text>
               <Text color={tc}>{renderInline(item.tokens || [{ type: 'text', text: item.text }], tc, cc)}</Text>
             </Box>
           ))}
@@ -110,8 +135,6 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
       );
     case 'hr':
       return <Text color={theme.inactive}>{'─'.repeat(40)}</Text>;
-    case 'space':
-      return null;
     case 'html':
       return <Text color={theme.inactive}>{token.text}</Text>;
     case 'table':
