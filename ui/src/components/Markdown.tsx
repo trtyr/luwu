@@ -5,6 +5,9 @@
 // - codespan: permission color (rgb(177,185,249) blue-purple), NOT success green
 // - strikethrough: DISABLED (model uses ~ for "approximate")
 // - dimColor prop: when true, all content uses theme.inactive instead of theme.text
+// - SPACING: Only structural blocks (code/list/blockquote/heading) get marginTop.
+//   Consecutive paragraphs flow naturally with NO extra blank line.
+//   Space tokens are filtered out entirely.
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
@@ -30,26 +33,38 @@ interface MarkdownProps {
   dimColor?: boolean;
 }
 
+// Block types that need spacing before them
+const STRUCTURAL_TYPES = new Set(['heading', 'code', 'list', 'blockquote', 'hr', 'table']);
+
 export function Markdown({ children, dimColor = false }: MarkdownProps) {
   const tokens = useMemo<AnyToken[]>(() => {
-    if (!hasMarkdownSyntax(children)) {
-      return [{ type: 'paragraph', raw: children, text: children, tokens: [{ type: 'text', raw: children, text: children }] }];
+    const trimmed = children.replace(/^\n+/, '').replace(/\n+$/, '');
+    if (!trimmed) return [];
+    if (!hasMarkdownSyntax(trimmed)) {
+      return [{ type: 'paragraph', raw: trimmed, text: trimmed, tokens: [{ type: 'text', raw: trimmed, text: trimmed }] }];
     }
     ensureMarkedConfig();
-    return marked.lexer(children);
+    return marked.lexer(trimmed);
   }, [children]);
 
-  // When dimColor, use theme.inactive for all text
   const tc = dimColor ? theme.inactive : theme.text;
   const cc = dimColor ? theme.inactive : theme.permission;
 
+  // Filter out space tokens — they cause double-spacing with marginTop
+  const contentTokens = tokens.filter((t: AnyToken) => t.type !== 'space');
+
   return (
     <Box flexDirection="column">
-      {tokens.map((tok: AnyToken, i: number) => (
-        <Box key={i} marginTop={i > 0 ? 1 : 0}>
-          <TokenRenderer token={tok} tc={tc} cc={cc} dimColor={dimColor} />
-        </Box>
-      ))}
+      {contentTokens.map((tok: AnyToken, i: number) => {
+        // Only add marginTop before structural blocks (code, list, heading, etc.)
+        // NOT between consecutive paragraphs — they flow naturally
+        const needsSpace = i > 0 && STRUCTURAL_TYPES.has(tok.type);
+        return (
+          <Box key={i} marginTop={needsSpace ? 1 : 0}>
+            <TokenRenderer token={tok} tc={tc} cc={cc} dimColor={dimColor} />
+          </Box>
+        );
+      })}
     </Box>
   );
 }
@@ -83,7 +98,6 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
       );
     }
     case 'blockquote':
-      // ▎ BLOCKQUOTE_BAR (U+258E) prefix in inactive + content italic
       return (
         <Box flexDirection="column">
           {(token.text || '').split('\n').filter(Boolean).map((line: string, i: number) => (
@@ -134,7 +148,6 @@ function renderInline(tokens: AnyToken[], tc: string, cc: string): React.ReactNo
   });
 }
 
-// When dimColor, link color should also be inactive
 function dimColorSafe(cc: string): string {
   return cc === theme.permission ? theme.inactive : cc;
 }

@@ -1,23 +1,24 @@
 // ToolResult — Claude Code 1:1
 // Source: docs/04-tool-use-ui.md
-// Layout: SAME as assistant text — flat row [● dot minWidth=2] [content column]
-// NOT wrapped in MessageResponse — tools are independent rows
-// Status: BLACK_CIRCLE for ALL states, COLOR differentiates:
-//   - running/unresolved: inactive color + BLINKING animation
-//   - success: theme.success green
-//   - error: theme.error red
+// Layout: SAME structure as assistant text — flat row [⏺ dot minWidth=2] [content column]
+// Status by COLOR: running=inactive+blink, success=green, error=red
+// Spacing: addMargin prop controls marginTop (false when紧跟 assistant text in same turn)
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
 import { LAYOUT } from '../core/constants.js';
 import type { ToolCallInfo } from '../core/types.js';
 
-export function ToolResult({ tool }: { tool: ToolCallInfo }) {
+interface ToolResultProps {
+  tool: ToolCallInfo;
+  addMargin?: boolean;
+}
+
+export function ToolResult({ tool, addMargin = true }: ToolResultProps) {
   const isRunning = tool.status === 'running';
   const isError = tool.status === 'error';
   const isDone = tool.status === 'done';
 
-  // Blink animation for running tools
   const [visible, setVisible] = useState(true);
   useEffect(() => {
     if (!isRunning) return;
@@ -25,11 +26,10 @@ export function ToolResult({ tool }: { tool: ToolCallInfo }) {
     return () => clearInterval(t);
   }, [isRunning]);
 
-  // Circle color: running = inactive (dimmed), done = success, error = error
   const circleColor = isDone ? theme.success : isError ? theme.error : theme.inactive;
   const circleChar = (isRunning && !visible) ? ' ' : LAYOUT.ASSISTANT_DOT;
 
-  // Parse args — extract readable parameter
+  // Parse args
   let paramDisplay = '';
   try {
     const parsed = JSON.parse(tool.args);
@@ -47,17 +47,21 @@ export function ToolResult({ tool }: { tool: ToolCallInfo }) {
     : '';
 
   return (
-    <Box alignItems="flex-start" flexDirection="row" width="100%" marginTop={1}>
-      {/* Status circle — same minWidth=2 as assistant dot */}
+    <Box
+      alignItems="flex-start"
+      flexDirection="row"
+      width="100%"
+      marginTop={addMargin ? 1 : 0}
+    >
+      {/* Status circle — same minWidth=2 as assistant dot, aligned */}
       <Box minWidth={LAYOUT.DOT_MIN_WIDTH}>
         <Text color={circleColor}>{circleChar}</Text>
       </Box>
       {/* Content column */}
       <Box flexDirection="column" flexShrink={1} flexGrow={1}>
-        <Box flexDirection="row" flexWrap="nowrap">
-          <Text bold color={theme.text} wrap="truncate-end">{tool.name}</Text>
-          {paramDisplay && <Text color={theme.inactive}> ({paramDisplay})</Text>}
-        </Box>
+        <Text bold color={theme.text} wrap="truncate-end">
+          {tool.name}{paramDisplay ? ` (${paramDisplay})` : ''}
+        </Text>
         {!isRunning && resultDisplay && (
           <Text color={isError ? theme.error : theme.subtle}>{resultDisplay}</Text>
         )}

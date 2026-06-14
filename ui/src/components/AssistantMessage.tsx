@@ -1,7 +1,9 @@
-// AssistantMessage — Claude Code AssistantTextMessage.tsx L228-266 layout
-// Source: docs/02-assistant-text-ui.md
-// [dot minWidth=2] [Markdown content column] inside flexDirection=row
-// alignItems=flex-start, justifyContent=space-between, width=100%
+// AssistantMessage — Claude Code AssistantTextMessage.tsx layout
+// Source: docs/02-assistant-text-ui.md, docs/04-tool-use-ui.md
+// Structure: one visual block per message
+//   [⏺ dot minWidth=2] [content column: Markdown + tools]
+// Reasoning sits ABOVE the dot, in the same column
+// Tools sit BELOW the dot text, each with their own ⏺ dot
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
@@ -13,15 +15,19 @@ import type { DisplayMessage } from '../core/types.js';
 
 export function AssistantMessage({ msg, addMargin }: { msg: DisplayMessage; addMargin: boolean }) {
   const hasReasoning = !!(msg.reasoning && msg.reasoning.trim());
+  const hasContent = !!(msg.content && msg.content.trim());
+  const hasTools = !!(msg.tools && msg.tools.length > 0);
 
   return (
     <Box flexDirection="column" marginTop={addMargin ? 1 : 0} width="100%">
+      {/* Reasoning — above dot, same column width */}
       {hasReasoning && <ReasoningBlock reasoning={msg.reasoning!} addMargin={false} />}
-      {msg.content && (
+
+      {/* Assistant text — dot + content */}
+      {hasContent && (
         <Box
           alignItems="flex-start"
           flexDirection="row"
-          justifyContent="space-between"
           marginTop={hasReasoning ? 1 : 0}
           width="100%"
         >
@@ -33,7 +39,11 @@ export function AssistantMessage({ msg, addMargin }: { msg: DisplayMessage; addM
           </Box>
         </Box>
       )}
-      {msg.tools?.map((tool, i) => <ToolResult key={i} tool={tool} />)}
+
+      {/* Tools — each has own ⏺ dot, compact spacing (marginTop=1 only if there's content above) */}
+      {hasTools && msg.tools!.map((tool, i) => (
+        <ToolResult key={i} tool={tool} addMargin={hasContent || i > 0} />
+      ))}
     </Box>
   );
 }
