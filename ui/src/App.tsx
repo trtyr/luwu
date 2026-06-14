@@ -9,6 +9,7 @@ import { StatusLine } from './components/StatusLine.js';
 import { PromptInput } from './components/PromptInput.js';
 import { Spinner } from './components/Spinner.js';
 import { Welcome } from './components/Welcome.js';
+import { ModelPicker } from './components/ModelPicker.js';
 import type { DisplayMessage, ToolCallInfo, Phase, StreamEvent } from './core/types.js';
 import { isBusy } from './core/state.js';
 import { useCommands } from './hooks/useCommands.js';
@@ -29,6 +30,8 @@ function getGitBranchSync(): string | null {
   } catch { return null; }
 }
 
+type Overlay = null | 'model';
+
 export function App() {
   const { exit } = useApp();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -39,6 +42,7 @@ export function App() {
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [contextPct, setContextPct] = useState(0);
   const [iteration, setIteration] = useState(0);
+  const [overlay, setOverlay] = useState<Overlay>(null);
   const abortRef = useRef<AbortController | null>(null);
   const spinnerVerbRef = useRef<string | undefined>(undefined);
 
@@ -74,6 +78,7 @@ export function App() {
     const result = await executeCommand(raw);
     if (result.type === 'clear') { setMessages([]); return; }
     if (result.type === 'exit') { exit(); return; }
+    if (result.type === 'overlay') { setOverlay(result.overlay); return; }
     if (result.type === 'setModel') { setModel(result.model); }
     setMessages(prev => [...prev, {
       id: uid(), role: 'system', timestamp: Date.now(), content: result.content,
@@ -164,8 +169,14 @@ export function App() {
     }
   }, [sessionId]);
 
-  // Esc = interrupt current request, Ctrl+C = exit
+  // Esc = interrupt current request (only when NOT in overlay)
+  // Ctrl+C = always works (interrupt or exit)
   useInput((input, key) => {
+    // When overlay is active, overlay components handle their own keys
+    if (overlay) {
+      if (key.ctrl && input === 'c') exit();
+      return;
+    }
     if (key.escape && abortRef.current) {
       abortRef.current.abort();
       if (sessionId) cancelTurn(sessionId).catch(() => {});
@@ -213,13 +224,27 @@ export function App() {
 
       <Spinner phase={phase} verb={spinnerVerbRef.current} />
 
-
-      <PromptInput
-        onSubmit={sendMessage}
-        onCommand={handleCommand}
-        disabled={busy}
-        phase={phase}
-      />
+      {overlay === 'model' ? (
+        <ModelPicker
+          currentModel={model}
+          onSelect={(m) => {
+            setModel(m);
+            setOverlay(null);
+            setMessages(prev => [...prev, {
+              id: uid(), role: 'system', timestamp: Date.now(),
+              content: `已切换到模型: ${m}`,
+            }]);
+          }}
+          onCancel={() => setOverlay(null)}
+        />
+      ) : (
+        <PromptInput
+          onSubmit={sendMessage}
+          onCommand={handleCommand}
+          disabled={busy}
+          phase={phase}
+        />
+      )}
 
       <StatusLine
         model={model}
