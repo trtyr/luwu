@@ -20,6 +20,7 @@ use tracing::{debug, info};
 const MAX_RESULTS: usize = 50;
 const MAX_LINE_LENGTH: usize = 500;
 /// Minimum time between forced index rebuilds (prevents thrashing).
+#[allow(dead_code)]
 const MIN_REBUILD_INTERVAL_SECS: u64 = 5;
 
 pub struct GrepTool;

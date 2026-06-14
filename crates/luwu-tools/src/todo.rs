@@ -263,7 +263,7 @@ impl Tool for TodoTool {
                     .iter()
                     .filter(|t| t.status != TaskStatus::Deleted)
                     .filter(|t| {
-                        filter.map_or(true, |f| {
+                        filter.is_none_or(|f| {
                             t.status
                                 == match f {
                                     "pending" => TaskStatus::Pending,
