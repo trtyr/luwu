@@ -155,3 +155,20 @@ export function toolDisplayName(name: string): string {
   };
   return map[name.toLowerCase()] || name.charAt(0).toUpperCase() + name.slice(1);
 }
+
+/**
+ * Extract old_text/new_text/path from edit tool args for inline diff rendering.
+ * Returns null if not an edit tool or missing required fields.
+ */
+export function parseEditArgs(name: string, args: string): { oldText: string; newText: string; filePath?: string } | null {
+  if (name.toLowerCase() !== 'edit') return null;
+  try {
+    const p = JSON.parse(args);
+    const oldText = p.old_text || p.anchor || '';
+    const newText = p.new_text || '';
+    if (!oldText && !newText) return null;
+    return { oldText, newText, filePath: p.path || p.file_path };
+  } catch {
+    return null;
+  }
+}
