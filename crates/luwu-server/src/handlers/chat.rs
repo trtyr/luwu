@@ -10,8 +10,7 @@ use axum::response::sse::{Event as SseEvent, Sse};
 
 use luwu_core::{EventBus, Message, TurnEngine, TurnEvent};
 
-
-use crate::app::{create_provider, AppState, builtin_tool_registry};
+use crate::app::{AppState, builtin_tool_registry, create_provider};
 use crate::types::*;
 
 #[allow(clippy::collapsible_if)]
@@ -52,13 +51,7 @@ pub async fn chat_completions(
     let tools = builtin_tool_registry();
     let events = EventBus::new(256);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let engine = TurnEngine::new(
-        provider,
-        tools,
-        state.skills.clone(),
-        events,
-        working_dir,
-    );
+    let engine = TurnEngine::new(provider, tools, state.skills.clone(), events, working_dir);
 
     // Convert request messages to core Messages.
     let mut messages: Vec<Message> = Vec::new();

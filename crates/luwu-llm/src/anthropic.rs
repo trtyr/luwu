@@ -20,7 +20,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::sse;
 
@@ -89,7 +89,8 @@ impl LlmProvider for AnthropicProvider {
         request: LlmRequest,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<LlmEvent>>> {
         let body = build_request_body(&request)?;
-        debug!(model = %request.model, "Sending Anthropic streaming request");
+        let _llm_start = std::time::Instant::now();
+        info!(model = %request.model, messages = request.messages.len(), "LLM stream request");
 
         let request = self
             .client

@@ -75,6 +75,7 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, input: Value, context: ToolContext) -> Result<ToolOutput> {
+        debug!("Tool executing: bash");
         let command = input["command"].as_str().ok_or_else(|| {
             luwu_core::LuwuError::Tool(
                 "The 'command' parameter is required. \

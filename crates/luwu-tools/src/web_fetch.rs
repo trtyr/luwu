@@ -8,7 +8,7 @@ use kawat::{ExtractorOptions, bare_extraction};
 use luwu_core::{LuwuError, Result, Tool, ToolContext, ToolOutput};
 use serde_json::Value;
 use std::time::Duration;
-use tracing::info;
+use tracing::{debug, info};
 
 const DEFAULT_MAX_CHARS: usize = 50_000;
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
@@ -87,6 +87,7 @@ impl Tool for WebFetchTool {
     }
 
     async fn execute(&self, input: Value, _context: ToolContext) -> Result<ToolOutput> {
+        debug!("Tool executing: web_fetch");
         let url = input["url"].as_str().ok_or_else(|| {
             LuwuError::Tool(
                 "The 'url' parameter is required. \

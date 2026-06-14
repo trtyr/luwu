@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use luwu_core::{Result, Tool, ToolContext, ToolOutput};
 use serde_json::Value;
-use tracing::info;
+use tracing::{debug, info};
 
 const MAX_WRITE_SIZE: usize = 500 * 1024; // 500 KB
 
@@ -71,6 +71,7 @@ impl Tool for WriteTool {
     }
 
     async fn execute(&self, input: Value, context: ToolContext) -> Result<ToolOutput> {
+        debug!("Tool executing: write");
         let path = input["path"].as_str().ok_or_else(|| {
             luwu_core::LuwuError::Tool(
                 "The 'path' parameter is required. \

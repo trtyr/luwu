@@ -8,6 +8,7 @@ use std::sync::Arc;
 use axum::Router;
 use tokio::task::JoinSet;
 use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
 
 use luwu_core::{LlmProvider, SessionManager, ToolRegistry};
 use luwu_llm::anthropic::AnthropicProvider;
@@ -118,5 +119,6 @@ pub fn router(state: AppState) -> Router {
             axum::routing::get(handlers::get_skill_detail),
         )
         .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
         .with_state(Arc::new(state))
 }

@@ -4,16 +4,56 @@ use luwu_core::SessionManager;
 use luwu_server::app::AppState;
 use luwu_server::config::Config;
 use std::net::SocketAddr;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
+fn default_log_filter() -> EnvFilter {
+    EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("luwu=debug,tower_http=info,reqwest=warn"))
+}
+
+/// Init structured tracing with optional JSON format and file output.
+///
+/// Env vars:
+///   RUST_LOG          — override log level (e.g. "luwu=trace")
+///   LUWU_LOG_FORMAT   — "json" for structured JSON, anything else = human-readable
+///   LUWU_LOG_FILE     — if set, also write JSON logs to this file with daily rotation
+fn init_tracing() {
+    let filter = default_log_filter();
+    let is_json = std::env::var("LUWU_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+
+    let file_path = std::env::var("LUWU_LOG_FILE").ok();
+    let registry = tracing_subscriber::registry().with(filter);
+
+    if let Some(path) = &file_path {
+        // File layer: always JSON for machine-readable logs, with daily rotation
+        let file_appender = tracing_appender::rolling::daily(".", path);
+        let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+        std::mem::forget(guard); // keep writing until process exits
+
+        let file_layer = fmt::layer().json().with_writer(file_writer);
+        let console_layer = if is_json {
+            fmt::layer().json().with_writer(std::io::stderr).boxed()
+        } else {
+            fmt::layer().with_writer(std::io::stderr).boxed()
+        };
+        registry.with(file_layer).with(console_layer).init();
+    } else if is_json {
+        registry
+            .with(fmt::layer().json().with_writer(std::io::stderr))
+            .init();
+    } else {
+        registry
+            .with(fmt::layer().with_writer(std::io::stderr))
+            .init();
+    }
+}
 
 #[tokio::main]
 async fn main() {
-    // Init tracing.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("info".parse().unwrap()),
-        )
-        .init();
+    // Init structured logging.
+    init_tracing();
 
     println!(
         "\x1b[2m陆吾 v{} — 昆仑山的管家\x1b[0m",
@@ -25,7 +65,10 @@ async fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error loading config: {e}");
-            eprintln!("Config file: {}", luwu_server::config::config_path().display());
+            eprintln!(
+                "Config file: {}",
+                luwu_server::config::config_path().display()
+            );
             std::process::exit(1);
         }
     };
@@ -65,11 +108,10 @@ async fn main() {
     println!("\x1b[2msessions: {} recovered\x1b[0m", recovered);
 
     // Discover skills.
-    let skills =
-        luwu_core::SkillRegistry::discover(&luwu_home, &working_dir).unwrap_or_else(|e| {
-            tracing::warn!("Skill discovery failed: {e}");
-            luwu_core::SkillRegistry::new()
-        });
+    let skills = luwu_core::SkillRegistry::discover(&luwu_home, &working_dir).unwrap_or_else(|e| {
+        tracing::warn!("Skill discovery failed: {e}");
+        luwu_core::SkillRegistry::new()
+    });
     println!("\x1b[2mskills:   {} loaded\x1b[0m", skills.len());
 
     // Build shared HTTP client.
@@ -120,6 +162,7 @@ async fn main() {
     println!("  GET    /v1/stats              Runtime stats");
     println!();
     println!("\x1b[2mCtrl+C to stop.\x1b[0m");
+    println!("\x1b[2mLogs: RUST_LOG / LUWU_LOG_FORMAT=json / LUWU_LOG_FILE=luwu.log\x1b[0m");
 
     // Graceful shutdown on Ctrl-C / SIGTERM.
     axum::serve(listener, app)

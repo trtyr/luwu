@@ -260,6 +260,7 @@ impl SessionManager {
             return Err(TrySetRunningError::AlreadyRunning);
         }
         session.is_running = true;
+        debug!("Session {} is now running", id);
         session.cancel_token = CancelToken::new();
         Ok(session.cancel_token.clone())
     }

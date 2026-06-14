@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use luwu_core::{Result, Tool, ToolContext, ToolOutput};
 use serde_json::Value;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::hashline;
 
@@ -102,6 +102,7 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, input: Value, context: ToolContext) -> Result<ToolOutput> {
+        debug!("Tool executing: edit");
         let path = input["path"].as_str().ok_or_else(|| {
             luwu_core::LuwuError::Tool(
                 "The 'path' parameter is required. \

@@ -260,6 +260,7 @@ impl TurnEngine {
                         },
                     };
 
+                    tracing::info!("Tool completed: {}", tool_name);
                     self.events.publish(Event::ToolCompleted {
                         session_id: session_id.clone(),
                         turn_id: turn_id.clone(),
@@ -282,6 +283,7 @@ impl TurnEngine {
             );
         }
 
+        tracing::info!("Agent turn completed, iterations={}", iteration);
         self.events.publish(Event::TurnCompleted {
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
@@ -352,6 +354,8 @@ impl TurnEngine {
             let mut llm_calls = 0u32;
             let mut tool_calls_count = 0u32;
             let mut iteration = 0u32;
+            tracing::info!("Agent turn started, messages={}", all_messages.len());
+            let _turn_start = std::time::Instant::now();
             let mut total_usage = crate::llm::LlmUsage::default();
 
             loop {
@@ -364,6 +368,7 @@ impl TurnEngine {
                 }
 
                 iteration += 1;
+                tracing::debug!("Iteration {} started", iteration);
                 if iteration > max_iterations {
                     let _ = tx
                         .send(TurnEvent::Error {

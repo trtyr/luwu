@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
-use tracing::info;
+use tracing::{debug, info};
 
 const MAX_RESULTS: usize = 50;
 const MAX_LINE_LENGTH: usize = 500;
@@ -101,6 +101,7 @@ impl Tool for GrepTool {
     }
 
     async fn execute(&self, input: Value, context: ToolContext) -> Result<ToolOutput> {
+        debug!("Tool executing: grep");
         let pattern = input["pattern"].as_str().ok_or_else(|| {
             luwu_core::LuwuError::Tool(
                 "The 'pattern' parameter is required. \
