@@ -1,12 +1,14 @@
-// ToolResult — Claude Code 1:1
-// Source: docs/04-tool-use-ui.md
-// Layout: SAME structure as assistant text — flat row [⏺ dot minWidth=2] [content column]
-// Status by COLOR: running=inactive+blink, success=green, error=red
-// Spacing: addMargin prop controls marginTop (false when紧跟 assistant text in same turn)
+// ToolResult — Claude Code doc 26 §2-§5 1:1
+// Layout: flat row [⏺ dot minWidth=2] [content column]
+//   tool_use: ⬤ ToolName(params) — bold name + params in parens
+//   tool_result: semantic one-liner via summarizeToolResult()
+//   tool_error: error message in theme.error
+// Status circle: running=inactive+blink, success=green, error=red (doc 26 §2.3)
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
 import { LAYOUT } from '../core/constants.js';
+import { parseToolArgs, summarizeToolResult, toolDisplayName } from '../core/toolUtils.js';
 import type { ToolCallInfo } from '../core/types.js';
 
 interface ToolResultProps {
@@ -19,6 +21,7 @@ export function ToolResult({ tool, addMargin = true }: ToolResultProps) {
   const isError = tool.status === 'error';
   const isDone = tool.status === 'done';
 
+  // Blink animation for running tools (doc 26 §2.3)
   const [visible, setVisible] = useState(true);
   useEffect(() => {
     if (!isRunning) return;
@@ -29,22 +32,10 @@ export function ToolResult({ tool, addMargin = true }: ToolResultProps) {
   const circleColor = isDone ? theme.success : isError ? theme.error : theme.inactive;
   const circleChar = (isRunning && !visible) ? ' ' : LAYOUT.ASSISTANT_DOT;
 
-  // Parse args
-  let paramDisplay = '';
-  try {
-    const parsed = JSON.parse(tool.args);
-    if (parsed.path) paramDisplay = parsed.path;
-    else if (parsed.file_path) paramDisplay = parsed.file_path;
-    else if (parsed.command) paramDisplay = parsed.command;
-    else if (parsed.pattern) paramDisplay = parsed.pattern;
-    else if (typeof parsed === 'string') paramDisplay = parsed;
-    else paramDisplay = tool.args;
-  } catch { paramDisplay = tool.args; }
-  if (paramDisplay.length > 60) paramDisplay = paramDisplay.slice(0, 57) + '...';
-
-  const resultDisplay = tool.result
-    ? tool.result.length > 80 ? tool.result.slice(0, 77) + '...' : tool.result
-    : '';
+  // Semantic display values
+  const displayName = toolDisplayName(tool.name);
+  const params = parseToolArgs(tool.name, tool.args);
+  const summary = !isRunning ? summarizeToolResult(tool.name, tool.result) : null;
 
   return (
     <Box
@@ -53,17 +44,23 @@ export function ToolResult({ tool, addMargin = true }: ToolResultProps) {
       width="100%"
       marginTop={addMargin ? 1 : 0}
     >
-      {/* Status circle — same minWidth=2 as assistant dot, aligned */}
+      {/* Status circle — minWidth=2, aligned with assistant text dot */}
       <Box minWidth={LAYOUT.DOT_MIN_WIDTH}>
         <Text color={circleColor}>{circleChar}</Text>
       </Box>
+
       {/* Content column */}
       <Box flexDirection="column" flexShrink={1} flexGrow={1}>
+        {/* Tool use line: bold name + params in parens (doc 26 §2.1) */}
         <Text bold color={theme.text} wrap="truncate-end">
-          {tool.name}{paramDisplay ? ` (${paramDisplay})` : ''}
+          {displayName}{params ? ` (${params})` : ''}
         </Text>
-        {!isRunning && resultDisplay && (
-          <Text color={isError ? theme.error : theme.subtle}>{resultDisplay}</Text>
+
+        {/* Result line — semantic summary (doc 26 §3.5, §5) */}
+        {!isRunning && summary && (
+          <Text color={isError ? theme.error : theme.subtle}>
+            {summary}
+          </Text>
         )}
       </Box>
     </Box>
