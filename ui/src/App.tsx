@@ -111,6 +111,7 @@ export function App() {
 
           case 'reasoning_delta':
             accReasoning += ev.delta || '';
+            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, reasoning: accReasoning } : m));
             break;
 
           case 'tool_call': {
@@ -207,7 +208,7 @@ export function App() {
       <Spinner phase={phase} verb={spinnerVerbRef.current} />
 
       {phase === 'streaming' && (
-        <Box marginTop={1}><Text color={theme.claude}>▎</Text></Box>
+        <Box marginTop={0}><Text color={theme.claude}>▎</Text></Box>
       )}
 
       <PromptInput
