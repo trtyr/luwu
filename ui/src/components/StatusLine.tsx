@@ -1,9 +1,8 @@
-// StatusLine — segment-based status bar
-// Inspired by CCometixLine: each info is a segment with icon + value.
-// Segments: model · runtime · cwd · git branch + status · [bar] ctx% tokens · iter · sess
-// Git status: ✓ clean / ● dirty / ⚠ conflict (polled every 5s)
-// Context zones: ≤70% green, 71-85% yellow, >85% red
-import React, { useState, useEffect } from 'react';
+// StatusLine — segment-based status bar with working indicator
+// Segments: [working/waiting spinner] · model · runtime · cwd · git · [bar] ctx% · iter · sess
+// Braille spinner: ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ (rotating dots animation)
+// Stalled detection: if no SSE activity for >15s during thinking/streaming → "waiting"
+import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
 
@@ -16,9 +15,14 @@ interface StatusLineProps {
   contextTokens?: number;
   phase: string;
   iteration?: number;
+  lastActivityRef?: React.MutableRefObject<number>;
 }
 
-// ── Git status detection (CCometixLine pattern) ──
+// Braille spinner frames — looks like rotating pixels
+const BRAILLE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const STALL_THRESHOLD_MS = 15_000; // 15s no activity → "waiting"
+
+// ── Git status detection ──
 interface GitStatus {
   clean: boolean;
   conflict: boolean;
@@ -57,7 +61,6 @@ function getGitStatus(cwd: string): GitStatus | null {
   }
 }
 
-// ── Token formatting (CCometixLine pattern) ──
 function formatTokens(tokens: number): string {
   if (tokens <= 0) return '-';
   if (tokens >= 1000) {
@@ -68,19 +71,54 @@ function formatTokens(tokens: number): string {
   return String(tokens);
 }
 
-// Session start time captured once on module load
 const SESSION_START = Date.now();
 
 export function StatusLine({
   model, sessionId, cwd, gitBranch, contextPercent, contextTokens, phase, iteration,
+  lastActivityRef,
 }: StatusLineProps) {
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+  const [spinnerIdx, setSpinnerIdx] = useState(0);
+  const [stallSec, setStallSec] = useState(0);
+
+  // Git poll every 5s
   useEffect(() => {
     const poll = () => setGitStatus(getGitStatus(cwd));
     poll();
     const timer = setInterval(poll, 5000);
     return () => clearInterval(timer);
   }, [cwd]);
+
+  const isWorking = phase === 'thinking' || phase === 'streaming';
+
+  // Braille spinner animation — 80ms interval while working
+  useEffect(() => {
+    if (!isWorking) return;
+    const timer = setInterval(() => setSpinnerIdx(i => (i + 1) % BRAILLE_FRAMES.length), 80);
+    return () => clearInterval(timer);
+  }, [isWorking]);
+
+  // Runtime + stall detection — 1s tick
+  const [runtime, setRuntime] = useState('0s');
+  useEffect(() => {
+    const update = () => {
+      const elapsed = Math.floor((Date.now() - SESSION_START) / 1000);
+      const m = Math.floor(elapsed / 60);
+      const s = elapsed % 60;
+      setRuntime(m > 0 ? `${m}m${s.toString().padStart(2, '0')}` : `${s}s`);
+
+      // Stall check
+      if (isWorking && lastActivityRef) {
+        const idle = Date.now() - lastActivityRef.current;
+        setStallSec(idle > STALL_THRESHOLD_MS ? Math.floor(idle / 1000) : 0);
+      } else {
+        setStallSec(0);
+      }
+    };
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [isWorking, lastActivityRef]);
 
   const ctxColor: string =
     contextPercent <= 70 ? theme.success :
@@ -91,20 +129,7 @@ export function StatusLine({
   const filled = Math.round((contextPercent / 100) * barWidth);
   const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
 
-  const [runtime, setRuntime] = useState('0s');
-  useEffect(() => {
-    const update = () => {
-      const elapsed = Math.floor((Date.now() - SESSION_START) / 1000);
-      const m = Math.floor(elapsed / 60);
-      const s = elapsed % 60;
-      setRuntime(m > 0 ? `${m}m${s.toString().padStart(2, '0')}` : `${s}s`);
-    };
-    update();
-    const interval = setInterval(update, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const hint = (phase === 'thinking' || phase === 'streaming')
+  const hint = isWorking
     ? 'esc to interrupt'
     : '? for shortcuts · ↑↓ history · / commands';
 
@@ -125,7 +150,25 @@ export function StatusLine({
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color={theme.permission}>{'❯ '}</Text>
+        {/* Working indicator — braille spinner + status text */}
+        {isWorking ? (
+          stallSec > 0 ? (
+            <>
+              <Text color={theme.warning}>{BRAILLE_FRAMES[spinnerIdx]} </Text>
+              <Text color={theme.warning}>waiting {stallSec}s</Text>
+            </>
+          ) : (
+            <>
+              <Text color={theme.claude}>{BRAILLE_FRAMES[spinnerIdx]} </Text>
+              <Text color={theme.claude}>working</Text>
+            </>
+          )
+        ) : (
+          <Text color={theme.permission}>{'❯'}</Text>
+        )}
+
+        {sep}
+
         <Text color={theme.inactive}>{model}</Text>
 
         {sep}

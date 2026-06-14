@@ -1,6 +1,4 @@
 // hooks/useChatSession.ts — chat state + SSE stream processing
-// Extracted from App.tsx so App becomes a pure composition layer.
-// All business logic for connection, messaging, and stream processing lives here.
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
   DisplayMessage, ToolCallInfo, AssistantBlock, Phase, StreamEvent,
@@ -22,7 +20,6 @@ function getGitBranchSync(): string | null {
 }
 
 export interface ChatSession {
-  // Read-only state
   messages: DisplayMessage[];
   phase: Phase;
   sessionId: string | null;
@@ -33,7 +30,7 @@ export interface ChatSession {
   contextTokens: number;
   iteration: number;
   spinnerVerb: string | undefined;
-  // Actions
+  lastActivityRef: React.MutableRefObject<number>;
   setMessages: React.Dispatch<React.SetStateAction<DisplayMessage[]>>;
   setModel: (m: string) => void;
   sendMessage: (text: string) => Promise<void>;
@@ -55,15 +52,14 @@ export function useChatSession(): ChatSession {
   const [iteration, setIteration] = useState(0);
   const [spinnerVerb, setSpinnerVerb] = useState<string | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
+  const lastActivityRef = useRef(Date.now());
 
-  // Helper to compute context % from token count
   const updateContext = useCallback((promptTokens: number, currentModel: string) => {
     const max = contextWindowFor(currentModel);
     setContextTokens(promptTokens);
     setContextPct(Math.min(100, Math.round((promptTokens / max) * 100)));
   }, []);
 
-  // ── Init: health check → create session → get models ──
   useEffect(() => {
     (async () => {
       try {
@@ -88,7 +84,6 @@ export function useChatSession(): ChatSession {
     })();
   }, []);
 
-  // ── Cancel current request ──
   const cancel = useCallback(() => {
     if (abortRef.current) {
       abortRef.current.abort();
@@ -96,17 +91,13 @@ export function useChatSession(): ChatSession {
     }
   }, [sessionId]);
 
-  // ── Restore/switch to an existing session ──
   const restoreSession = useCallback((id: string) => {
     if (abortRef.current) {
       abortRef.current.abort();
       if (sessionId) cancelTurn(sessionId).catch(() => {});
     }
     setSessionId(id);
-    setContextPct(0);
-    setContextTokens(0);
-    setIteration(0);
-    setSpinnerVerb(undefined);
+    setContextPct(0); setContextTokens(0); setIteration(0); setSpinnerVerb(undefined);
     setPhase('ready');
     setMessages([{
       id: uid(), role: 'system', timestamp: Date.now(),
@@ -114,16 +105,12 @@ export function useChatSession(): ChatSession {
     }]);
   }, [sessionId]);
 
-  // ── Create a brand-new session ──
   const newSession = useCallback(async () => {
     if (abortRef.current) {
       abortRef.current.abort();
       if (sessionId) cancelTurn(sessionId).catch(() => {});
     }
-    setContextPct(0);
-    setContextTokens(0);
-    setIteration(0);
-    setSpinnerVerb(undefined);
+    setContextPct(0); setContextTokens(0); setIteration(0); setSpinnerVerb(undefined);
     setPhase('connecting');
     setMessages([{
       id: uid(), role: 'system', timestamp: Date.now(),
@@ -143,7 +130,6 @@ export function useChatSession(): ChatSession {
     }
   }, [sessionId]);
 
-  // ── Send message: builds blocks[] in chronological order ──
   const sendMessage = useCallback(async (text: string) => {
     if (!sessionId || !text.trim()) return;
 
@@ -158,22 +144,24 @@ export function useChatSession(): ChatSession {
     setPhase('thinking');
     setIteration(0);
     setSpinnerVerb(undefined);
+    lastActivityRef.current = Date.now();
 
     const controller = new AbortController();
     abortRef.current = controller;
 
-    // Stream state — blocks[] built in chronological order
+    // ── Stream state ──
     const blocks: AssistantBlock[] = [];
     let currentText = '';
     let accReasoning = '';
     const toolIndexMap = new Map<string, number>();
 
+    // ── Throttle: batch React state updates to prevent flickering ──
+    const SYNC_MS = 60;
+    let lastSyncTime = 0;
+    let syncTimer: ReturnType<typeof setTimeout> | null = null;
+
     const flushText = () => {
-      // Guard: skip whitespace-only text (prevents empty ⏺ blocks)
-      if (currentText.trim().length === 0) {
-        currentText = '';
-        return;
-      }
+      if (currentText.trim().length === 0) { currentText = ''; return; }
       const last = blocks[blocks.length - 1];
       if (last && last.type === 'text') {
         last.text = currentText;
@@ -182,37 +170,57 @@ export function useChatSession(): ChatSession {
       }
     };
 
-    const syncBlocks = () => {
+    // Core state mutation — updates both blocks and reasoning in one shot
+    const syncToReact = () => {
       const textContent = blocks
         .filter(b => b.type === 'text')
         .map(b => (b as { type: 'text'; text: string }).text)
         .join('\n\n');
+      const reasoning = accReasoning;
       setMessages(prev => prev.map(m =>
         m.id === assistantId
-          ? {
-            ...m,
-            blocks: blocks.map(b => ({ ...b })),
-            content: textContent,
-          }
+          ? { ...m, blocks: blocks.map(b => ({ ...b })), content: textContent, reasoning }
           : m
       ));
     };
 
+    const throttledSync = () => {
+      const now = Date.now();
+      const elapsed = now - lastSyncTime;
+      if (elapsed >= SYNC_MS) {
+        lastSyncTime = now;
+        syncToReact();
+      } else if (!syncTimer) {
+        syncTimer = setTimeout(() => {
+          syncTimer = null;
+          lastSyncTime = Date.now();
+          syncToReact();
+        }, SYNC_MS - elapsed);
+      }
+    };
+
+    // Force immediate sync (for tool events, done, cancel, error)
+    const immediateSync = () => {
+      if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
+      lastSyncTime = Date.now();
+      syncToReact();
+    };
+
     try {
       await streamChat(sessionId, text, (ev: StreamEvent) => {
+        lastActivityRef.current = Date.now();
+
         switch (ev.type) {
           case 'text_delta':
             currentText += ev.delta || '';
             setPhase('streaming');
             flushText();
-            syncBlocks();
+            throttledSync();
             break;
 
           case 'reasoning_delta':
             accReasoning += ev.delta || '';
-            setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, reasoning: accReasoning } : m
-            ));
+            throttledSync();
             break;
 
           case 'tool_call': {
@@ -226,19 +234,20 @@ export function useChatSession(): ChatSession {
             const toolInfo: ToolCallInfo = { name, args, status: 'running' };
             blocks.push({ type: 'tool', tool: toolInfo });
             toolIndexMap.set(name, blocks.length - 1);
-            syncBlocks();
+            immediateSync();
             break;
           }
 
           case 'tool_completed': {
             const name = ev.name || ev.tool_name || '';
             const rawResult = ev.result || ev.output || '';
-            // Detect errors in tool results
-            const lower = rawResult.toLowerCase(); const isErr = lower.includes('error')
+            const lower = rawResult.toLowerCase();
+            const isErr = lower.includes('error')
               || lower.includes('panicked')
               || lower.includes('no such file')
               || lower.includes('not found')
-              || lower.includes('failed');
+              || lower.includes('failed')
+              || lower.includes('permission denied');
             const idx = toolIndexMap.get(name);
             if (idx !== undefined && blocks[idx]?.type === 'tool') {
               blocks[idx].tool.result = rawResult;
@@ -249,44 +258,45 @@ export function useChatSession(): ChatSession {
               blocks.push({
                 type: 'tool',
                 tool: {
-                  name, args: '',
-                  result: rawResult,
+                  name, args: '', result: rawResult,
                   status: (isErr ? 'error' : 'done') as 'error' | 'done',
                 },
               });
               toolIndexMap.set(name, blocks.length - 1);
             }
-            syncBlocks();
+            immediateSync();
             break;
           }
 
-          case 'iteration_end': {
+          case 'iteration_end':
             setIteration(ev.iteration || 0);
-            if (ev.usage?.prompt_tokens) {
-              updateContext(ev.usage.prompt_tokens, model);
-            }
+            if (ev.usage?.prompt_tokens) updateContext(ev.usage.prompt_tokens, model);
             break;
-          }
 
-          case 'done': {
-            if (ev.usage?.prompt_tokens) {
-              updateContext(ev.usage.prompt_tokens, model);
-            }
+          case 'done':
+            immediateSync();
+            if (ev.usage?.prompt_tokens) updateContext(ev.usage.prompt_tokens, model);
             break;
-          }
-          case 'cancelled': syncBlocks(); break;
+
+          case 'cancelled':
+            immediateSync();
+            break;
+
           case 'error':
             currentText += `\n⚠ ${ev.message || 'Unknown error'}`;
             flushText();
-            syncBlocks();
+            immediateSync();
             break;
         }
       }, controller.signal);
     } catch (e) {
+      if (syncTimer) clearTimeout(syncTimer);
       if ((e as Error).name !== 'AbortError') {
         currentText += `\n⚠ ${String(e)}`;
         flushText();
-        syncBlocks();
+        syncToReact();
+      } else {
+        syncToReact();
       }
     } finally {
       abortRef.current = null;
@@ -297,6 +307,7 @@ export function useChatSession(): ChatSession {
   return {
     messages, phase, sessionId, error, model, gitBranch,
     contextPct, contextTokens, iteration, spinnerVerb,
+    lastActivityRef,
     setMessages, setModel, sendMessage, cancel, restoreSession, newSession, abortRef,
   };
 }

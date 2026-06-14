@@ -180,6 +180,7 @@ export function App() {
         contextTokens={chat.contextTokens}
         phase={chat.phase}
         iteration={chat.iteration}
+        lastActivityRef={chat.lastActivityRef}
       />
 
       {notification && (
