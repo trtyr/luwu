@@ -177,6 +177,7 @@ export function App() {
         cwd={process.cwd()}
         gitBranch={chat.gitBranch}
         contextPercent={chat.contextPct}
+        contextTokens={chat.contextTokens}
         phase={chat.phase}
         iteration={chat.iteration}
       />

@@ -30,6 +30,7 @@ export interface ChatSession {
   model: string;
   gitBranch: string | null;
   contextPct: number;
+  contextTokens: number;
   iteration: number;
   spinnerVerb: string | undefined;
   // Actions
@@ -50,9 +51,17 @@ export function useChatSession(): ChatSession {
   const [model, setModel] = useState('glm-4.7');
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [contextPct, setContextPct] = useState(0);
+  const [contextTokens, setContextTokens] = useState(0);
   const [iteration, setIteration] = useState(0);
   const [spinnerVerb, setSpinnerVerb] = useState<string | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Helper to compute context % from token count
+  const updateContext = useCallback((promptTokens: number, currentModel: string) => {
+    const max = contextWindowFor(currentModel);
+    setContextTokens(promptTokens);
+    setContextPct(Math.min(100, Math.round((promptTokens / max) * 100)));
+  }, []);
 
   // ── Init: health check → create session → get models ──
   useEffect(() => {
@@ -95,6 +104,7 @@ export function useChatSession(): ChatSession {
     }
     setSessionId(id);
     setContextPct(0);
+    setContextTokens(0);
     setIteration(0);
     setSpinnerVerb(undefined);
     setPhase('ready');
@@ -105,15 +115,13 @@ export function useChatSession(): ChatSession {
   }, [sessionId]);
 
   // ── Create a brand-new session ──
-  // Calls createSession() API → setSessionId(newId) → StatusLine auto-updates
   const newSession = useCallback(async () => {
-    // Cancel any in-flight request
     if (abortRef.current) {
       abortRef.current.abort();
       if (sessionId) cancelTurn(sessionId).catch(() => {});
     }
-    // Reset state immediately so status bar reflects "switching"
     setContextPct(0);
+    setContextTokens(0);
     setIteration(0);
     setSpinnerVerb(undefined);
     setPhase('connecting');
@@ -244,16 +252,14 @@ export function useChatSession(): ChatSession {
           case 'iteration_end': {
             setIteration(ev.iteration || 0);
             if (ev.usage?.prompt_tokens) {
-              const max = contextWindowFor(model);
-              setContextPct(Math.min(100, Math.round((ev.usage.prompt_tokens / max) * 100)));
+              updateContext(ev.usage.prompt_tokens, model);
             }
             break;
           }
 
           case 'done': {
             if (ev.usage?.prompt_tokens) {
-              const max = contextWindowFor(model);
-              setContextPct(Math.min(100, Math.round((ev.usage.prompt_tokens / max) * 100)));
+              updateContext(ev.usage.prompt_tokens, model);
             }
             break;
           }
@@ -275,11 +281,11 @@ export function useChatSession(): ChatSession {
       abortRef.current = null;
       setPhase('ready');
     }
-  }, [sessionId]);
+  }, [sessionId, model, updateContext]);
 
   return {
     messages, phase, sessionId, error, model, gitBranch,
-    contextPct, iteration, spinnerVerb,
+    contextPct, contextTokens, iteration, spinnerVerb,
     setMessages, setModel, sendMessage, cancel, restoreSession, newSession, abortRef,
   };
 }
