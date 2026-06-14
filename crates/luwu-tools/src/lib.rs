@@ -9,15 +9,18 @@
 //! - `edit` — make precise text replacements in existing files
 //! - `grep` — grep / search file contents
 //! - `web_fetch` — fetch web pages and extract readable content
+//! - `todo` — task management (create/update/list/get/delete)
+//! - `memory` — persistent memory (search/write/delete)
 
 pub mod bash;
 pub mod edit;
 pub mod error;
 pub mod grep;
-pub mod memory_search;
+pub mod memory;
 pub mod read;
 pub mod web_fetch;
 pub mod write;
+pub mod todo;
 
 pub mod hashline;
 use luwu_core::Tool;
@@ -31,6 +34,7 @@ pub fn all_builtin_tools() -> Vec<Box<dyn Tool>> {
         Box::new(edit::EditTool::new()),
         Box::new(grep::GrepTool::new()),
         Box::new(web_fetch::WebFetchTool::new()),
-        Box::new(memory_search::MemorySearchTool::new()),
+        Box::new(memory::MemoryTool::new()),
+        Box::new(todo::TodoTool::new()),
     ]
 }
