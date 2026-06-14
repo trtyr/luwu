@@ -3,6 +3,10 @@ name = "luwu-server"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "luwu"
+path = "src/main.rs"
+
 [dependencies]
 luwu-core = { path = "../luwu-core" }
 luwu-llm = { path = "../luwu-llm" }
