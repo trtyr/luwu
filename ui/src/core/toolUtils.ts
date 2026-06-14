@@ -70,7 +70,7 @@ export function summarizeToolResult(name: string, result: string | undefined): s
   }
 
   // ── Grep / ffgrep ──
-  if (lower === 'grep' || lower === 'ffgrep' || lower === 'memory' || lower === 'memory_search') {
+  if (lower === 'grep' || lower === 'ffgrep') {
     // Count file-like lines (contain : or look like file paths)
     const lines = trimmed.split('\n');
     const fileCount = lines.filter(l =>
@@ -80,6 +80,16 @@ export function summarizeToolResult(name: string, result: string | undefined): s
       return `Found ${fileCount} ${fileCount === 1 ? 'result' : 'results'}`;
     }
     return `Found ${lines.length} ${lines.length === 1 ? 'match' : 'matches'}`;
+  }
+
+  // ── Memory (search/write/delete — action-aware) ──
+  if (lower === 'memory' || lower === 'memory_search') {
+    // Write/delete success: "Memory saved" / "Memory deleted"
+    if (/wrote|saved|written|stored|added/i.test(trimmed)) return 'Memory saved';
+    if (/deleted|removed|purged/i.test(trimmed)) return 'Memory deleted';
+    // Search results: count entries
+    const lines = trimmed.split('\n').filter(l => l.trim());
+    return `Found ${lines.length} ${lines.length === 1 ? 'entry' : 'entries'}`;
   }
 
   // ── Find / fffind ──
