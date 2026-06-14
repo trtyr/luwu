@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::error::{LuwuError, Result};
 use crate::event::{Event, EventBus, TurnEvent, TurnId};
@@ -95,8 +95,6 @@ pub struct TurnEngine {
     skills: crate::skill::SkillRegistry,
     events: EventBus,
     working_dir: PathBuf,
-    /// Maximum number of LLM → tool → LLM iterations before forcing a stop.
-    max_iterations: u32,
 }
 
 impl TurnEngine {
@@ -114,14 +112,7 @@ impl TurnEngine {
             skills,
             events,
             working_dir,
-            max_iterations: 50,
         }
-    }
-
-    /// Set the maximum number of agentic iterations (LLM → tool → LLM loops).
-    pub fn with_max_iterations(mut self, max: u32) -> Self {
-        self.max_iterations = max;
-        self
     }
 
     /// Run a single turn: send the user message through the full agent loop.
@@ -158,18 +149,6 @@ impl TurnEngine {
 
         loop {
             iteration += 1;
-            if iteration > self.max_iterations {
-                warn!(
-                    iterations = iteration,
-                    "Hit max iteration limit, stopping turn"
-                );
-                self.events.publish(Event::Error {
-                    session_id: session_id.clone(),
-                    turn_id: Some(turn_id.clone()),
-                    message: format!("Turn exceeded max iterations ({})", self.max_iterations),
-                });
-                break;
-            }
 
             result.llm_calls += 1;
 
@@ -329,7 +308,6 @@ impl TurnEngine {
         let skills = self.skills.clone();
         let events = self.events.clone();
         let working_dir = self.working_dir.clone();
-        let max_iterations = self.max_iterations;
         let system_prompt = system_prompt_with_tools_and_skills(&tools.tool_names(), &skills);
 
         tokio::spawn(async move {
@@ -370,14 +348,6 @@ impl TurnEngine {
 
                 iteration += 1;
                 tracing::debug!("Iteration {} started", iteration);
-                if iteration > max_iterations {
-                    let _ = tx
-                        .send(TurnEvent::Error {
-                            message: format!("Exceeded max iterations ({})", max_iterations),
-                        })
-                        .await;
-                    break;
-                }
 
                 llm_calls += 1;
 
