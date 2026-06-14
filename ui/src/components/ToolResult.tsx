@@ -1,11 +1,9 @@
-// components/ToolResult.tsx — Claude Code-style tool call display
-// Structure: [dot/loader] ToolName(params) → result
-// All wrapped in MessageResponse (⎿ indent)
+// ToolResult — Claude Code-style: ⎿ ToolName(params) → result
+// Structure: MessageResponse wraps the whole thing, inner rows are NOT double-indented
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
 import { MessageResponse } from './MessageResponse.js';
-import { LAYOUT } from '../core/constants.js';
 import type { ToolCallInfo } from '../core/types.js';
 
 const STATUS_ICONS = { running: '⟳', done: '✓', error: '✗' } as const;
@@ -17,7 +15,7 @@ export function ToolResult({ tool }: { tool: ToolCallInfo }) {
     tool.status === 'done' ? theme.success :
     theme.error;
 
-  // Parse args — try to extract a readable parameter
+  // Parse args — extract readable parameter
   let paramDisplay = '';
   try {
     const parsed = JSON.parse(tool.args);
@@ -31,7 +29,6 @@ export function ToolResult({ tool }: { tool: ToolCallInfo }) {
     paramDisplay = tool.args;
   }
 
-  // Truncate param display
   if (paramDisplay.length > 60) {
     paramDisplay = paramDisplay.slice(0, 57) + '...';
   }
@@ -44,24 +41,18 @@ export function ToolResult({ tool }: { tool: ToolCallInfo }) {
 
   return (
     <MessageResponse>
-      <Box flexDirection="column">
-        {/* Tool name + params row */}
-        <Box flexDirection="row" flexWrap="nowrap">
-          <Text color={iconColor}>{icon} </Text>
-          <Text bold color={theme.text} wrap="truncate-end">{tool.name}</Text>
-          {paramDisplay && (
-            <Text color={theme.inactive}>({paramDisplay})</Text>
-          )}
-        </Box>
-        {/* Result row (only if done/error) */}
-        {tool.status !== 'running' && resultDisplay && (
-          <MessageResponse>
-            <Text color={tool.status === 'error' ? theme.error : theme.subtle}>
-              {resultDisplay}
-            </Text>
-          </MessageResponse>
+      <Box flexDirection="row" flexWrap="nowrap">
+        <Text color={iconColor}>{icon} </Text>
+        <Text bold color={theme.text} wrap="truncate-end">{tool.name}</Text>
+        {paramDisplay && (
+          <Text color={theme.inactive}>({paramDisplay})</Text>
         )}
       </Box>
+      {tool.status !== 'running' && resultDisplay && (
+        <Text color={tool.status === 'error' ? theme.error : theme.subtle}>
+          {resultDisplay}
+        </Text>
+      )}
     </MessageResponse>
   );
 }
