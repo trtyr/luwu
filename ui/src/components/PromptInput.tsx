@@ -86,9 +86,8 @@ export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInpu
     : 'send a message (↑↓ history, / for commands)';
 
   // Claude Code: top + bottom border only (no left/right), round style
-  const borderColor = phase === 'thinking' || phase === 'streaming'
-    ? theme.claude
-    : theme.promptBorder;
+  // Claude Code: border is always promptBorder, not phase-dependent
+  const borderColor = theme.promptBorder;
 
   return (
     <Box flexDirection="column" marginTop={1}>
