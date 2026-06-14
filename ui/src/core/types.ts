@@ -11,11 +11,17 @@ export interface ToolCallInfo {
   status: 'running' | 'done' | 'error';
 }
 
+// Assistant message blocks — interleaved text + tool calls in chronological order
+// (Claude Code doc 15: assistant content is an array of blocks, not separate fields)
+export type AssistantBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool'; tool: ToolCallInfo };
+
 export interface DisplayMessage {
   id: string;
   role: Role;
-  content: string;
-  tools?: ToolCallInfo[];
+  content: string;          // used for user/system messages; for assistant, derived from blocks
+  blocks?: AssistantBlock[]; // assistant messages: ordered text + tool blocks
   timestamp: number;
   reasoning?: string;
 }

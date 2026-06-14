@@ -9,7 +9,7 @@ import { PromptInput } from './components/PromptInput.js';
 import { Spinner } from './components/Spinner.js';
 import { Welcome } from './components/Welcome.js';
 import { ModelPicker } from './components/ModelPicker.js';
-import type { DisplayMessage, ToolCallInfo, Phase, StreamEvent } from './core/types.js';
+import type { DisplayMessage, ToolCallInfo, AssistantBlock, Phase, StreamEvent } from './core/types.js';
 import { isBusy } from './core/state.js';
 import { useCommands } from './hooks/useCommands.js';
 import {
@@ -110,14 +110,14 @@ export function App() {
     }]);
   }, [executeCommand, exit]);
 
-  // Send message
+  // Send message — builds blocks[] in chronological order (text + tool interleaved)
   const sendMessage = useCallback(async (text: string) => {
     if (!sessionId || !text.trim()) return;
 
     const userMsg: DisplayMessage = { id: uid(), role: 'user', content: text.trim(), timestamp: Date.now() };
     const assistantId = uid();
     setMessages(prev => [...prev, userMsg, {
-      id: assistantId, role: 'assistant', content: '', tools: [], timestamp: Date.now(),
+      id: assistantId, role: 'assistant', content: '', blocks: [], timestamp: Date.now(),
     }]);
 
     setPhase('thinking');
@@ -127,66 +127,119 @@ export function App() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    let accText = '';
+    // Track state for building blocks[] in order
+    let blocks: AssistantBlock[] = [];
+    let currentText = '';      // accumulates into the last text block
     let accReasoning = '';
-    const toolMap = new Map<string, ToolCallInfo>();
+    // Track tool blocks by name for status updates
+    const toolIndexMap = new Map<string, number>(); // toolName → index in blocks[]
+
+    // Helper: flush currentText into blocks[] as a text block (or update last one)
+    const flushText = () => {
+      if (currentText.length === 0) return;
+      // Check if last block is already a text block — if so, update it
+      const last = blocks[blocks.length - 1];
+      if (last && last.type === 'text') {
+        last.text = currentText;
+      } else {
+        blocks.push({ type: 'text', text: currentText });
+      }
+    };
+
+    // Helper: sync blocks[] into the assistant message
+    const syncBlocks = () => {
+      // content is derived from text blocks for backward compat
+      const textContent = blocks
+        .filter(b => b.type === 'text')
+        .map(b => (b as { type: 'text'; text: string }).text)
+        .join('\n\n');
+      setMessages(prev => prev.map(m =>
+        m.id === assistantId
+          ? { ...m, blocks: [...blocks.map(b => b.type === 'text' ? { ...b } : { ...b })], content: textContent }
+          : m
+      ));
+    };
 
     try {
       await streamChat(sessionId, text, (ev: StreamEvent) => {
         switch (ev.type) {
-          case 'text_delta':
-            accText += ev.delta || '';
+          case 'text_delta': {
+            currentText += ev.delta || '';
             setPhase('streaming');
-            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: accText } : m));
+            flushText();
+            syncBlocks();
             break;
+          }
 
-          case 'reasoning_delta':
+          case 'reasoning_delta': {
             accReasoning += ev.delta || '';
             setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, reasoning: accReasoning } : m));
             break;
+          }
 
           case 'tool_call': {
+            // Flush any accumulated text before starting a tool block
+            flushText();
+            currentText = ''; // reset text accumulator — next text_delta starts a new block
+
             spinnerVerbRef.current = ev.name || ev.tool_name || 'tool';
             const name = ev.name || ev.tool_name || 'unknown';
             const args = ev.arguments
               ? (typeof ev.arguments === 'string' ? ev.arguments : JSON.stringify(ev.arguments))
               : '';
-            toolMap.set(name, { name, args, status: 'running' });
-            setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, tools: Array.from(toolMap.values()) } : m));
+            const toolInfo: ToolCallInfo = { name, args, status: 'running' };
+            blocks.push({ type: 'tool', tool: toolInfo });
+            toolIndexMap.set(name, blocks.length - 1);
+            syncBlocks();
             break;
           }
 
           case 'tool_completed': {
             const name = ev.name || ev.tool_name || '';
-            const ex = toolMap.get(name);
-            if (ex) { ex.result = ev.result || ev.output; ex.status = 'done'; }
-            else toolMap.set(name, { name, args: '', result: ev.result || ev.output, status: 'done' });
-            setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, tools: Array.from(toolMap.values()) } : m));
+            const idx = toolIndexMap.get(name);
+            if (idx !== undefined && blocks[idx]?.type === 'tool') {
+              blocks[idx].tool.result = ev.result || ev.output;
+              blocks[idx].tool.status = 'done';
+            } else {
+              // Tool completed without a prior tool_call event — add it
+              flushText();
+              currentText = '';
+              const toolInfo: ToolCallInfo = {
+                name, args: '',
+                result: ev.result || ev.output,
+                status: 'done',
+              };
+              blocks.push({ type: 'tool', tool: toolInfo });
+              toolIndexMap.set(name, blocks.length - 1);
+            }
+            syncBlocks();
             break;
           }
 
           case 'iteration_end':
             setIteration(ev.iteration || 0);
-            setContextPct(Math.min(99, 15 + Math.floor(accText.length / 200)));
+            setContextPct(Math.min(99, 15 + Math.floor(
+              blocks.filter(b => b.type === 'text')
+                .reduce((sum, b) => sum + (b as { type: 'text'; text: string }).text.length, 0) / 200
+            )));
             break;
 
           case 'done': break;
           case 'cancelled':
-            setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, content: accText } : m));
+            syncBlocks();
             break;
           case 'error':
-            setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, content: accText + `\n⚠ ${ev.message}` } : m));
+            currentText += `\n⚠ ${ev.message || 'Unknown error'}`;
+            flushText();
+            syncBlocks();
             break;
         }
       }, controller.signal);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
-        setMessages(prev => prev.map(m =>
-          m.id === assistantId ? { ...m, content: accText + `\n⚠ ${String(e)}` } : m));
+        currentText += `\n⚠ ${String(e)}`;
+        flushText();
+        syncBlocks();
       }
     } finally {
       abortRef.current = null;

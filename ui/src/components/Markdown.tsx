@@ -7,6 +7,8 @@
 // - dimColor prop: theme.inactive instead of theme.text
 // - SPACING: paragraphs share the same Text block, separated by \n only.
 //   Structural blocks (code/list/blockquote/heading) get their own Box with marginTop.
+// - LIST ITEMS: marked v18 nests block-level wrappers (paragraph) inside list_item.tokens.
+//   We must flatten to extract inline tokens (strong/em/codespan/text) for rendering.
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
@@ -32,9 +34,6 @@ interface MarkdownProps {
   dimColor?: boolean;
 }
 
-// Structural blocks that need their own Box with marginTop
-const STRUCTURAL_TYPES = new Set(['heading', 'code', 'list', 'blockquote', 'hr', 'table']);
-
 export function Markdown({ children, dimColor = false }: MarkdownProps) {
   const tokens = useMemo<AnyToken[]>(() => {
     const trimmed = children.replace(/^\n+/, '').replace(/\n+$/, '');
@@ -50,12 +49,11 @@ export function Markdown({ children, dimColor = false }: MarkdownProps) {
   const cc = dimColor ? theme.inactive : theme.permission;
 
   // Group consecutive paragraphs into a single rendered block
-  // so they flow as continuous text separated by blank lines (from \n\n in content)
   const groups: { type: 'paragraph-group' | string; tokens: AnyToken[] }[] = [];
   let paraBuffer: AnyToken[] = [];
 
   for (const tok of tokens) {
-    if (tok.type === 'space') continue; // skip spaces entirely
+    if (tok.type === 'space') continue;
     if (tok.type === 'paragraph') {
       paraBuffer.push(tok);
     } else {
@@ -77,8 +75,6 @@ export function Markdown({ children, dimColor = false }: MarkdownProps) {
         return (
           <Box key={i} marginTop={needsSpace ? 1 : 0}>
             {group.type === 'paragraph-group' ? (
-              // Render all paragraphs as a single continuous text block
-              // Each paragraph separated by \n (not \n\n — the marginTop handles spacing)
               <Text color={tc}>
                 {group.tokens.map((ptok: AnyToken, pi: number) => (
                   <React.Fragment key={pi}>
@@ -113,12 +109,29 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
       const items = token.items || [];
       return (
         <Box flexDirection="column">
-          {items.map((item: AnyToken, i: number) => (
-            <Box key={i} flexDirection="row">
-              <Text color={tc}>{'  '.repeat(token.depth || 0)}{token.ordered ? `${i + 1}. ` : '- '}</Text>
-              <Text color={tc}>{renderInline(item.tokens || [{ type: 'text', text: item.text }], tc, cc)}</Text>
-            </Box>
-          ))}
+          {items.map((item: AnyToken, i: number) => {
+            // marked v18: item.tokens contains block-level wrappers (paragraph, list_item, etc.)
+            // We must extract the inner inline tokens from each wrapper, otherwise
+            // **bold**, `code`, *italic* inside list items won't be parsed.
+            let inlineTokens: AnyToken[] = [];
+            if (item.tokens) {
+              for (const t of item.tokens) {
+                if (t.type === 'text' || t.type === 'paragraph') {
+                  inlineTokens = inlineTokens.concat(t.tokens || [{ type: 'text', text: t.text }]);
+                } else {
+                  inlineTokens.push(t);
+                }
+              }
+            } else {
+              inlineTokens = [{ type: 'text', text: item.text || '' }];
+            }
+            return (
+              <Box key={i} flexDirection="row">
+                <Text color={tc}>{'  '.repeat(token.depth || 0)}{token.ordered ? `${i + 1}. ` : '- '}</Text>
+                <Text color={tc}>{renderInline(inlineTokens, tc, cc)}</Text>
+              </Box>
+            );
+          })}
         </Box>
       );
     }
