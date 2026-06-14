@@ -93,7 +93,7 @@ export function Spinner({ phase, verb }: Props) {
 
   if (phase !== 'thinking' && typeof thinkingStatus === 'number') {
     return (
-      <Box minWidth={2}>
+      <Box minWidth={2} marginTop={1}>
         <Text color={theme.claude}>✻ </Text>
         <Text color={theme.inactive}>{completionVerb} for </Text>
         <Text color={theme.text} bold>{(thinkingStatus / 1000).toFixed(1)}s</Text>

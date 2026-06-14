@@ -42,7 +42,7 @@ export function App() {
   const abortRef = useRef<AbortController | null>(null);
   const spinnerVerbRef = useRef<string | undefined>(undefined);
 
-  const { executeCommand } = useCommands(model);
+  const { executeCommand } = useCommands(model, setModel);
 
   // Init
   useEffect(() => {
@@ -74,6 +74,7 @@ export function App() {
     const result = await executeCommand(raw);
     if (result.type === 'clear') { setMessages([]); return; }
     if (result.type === 'exit') { exit(); return; }
+    if (result.type === 'setModel') { setModel(result.model); }
     setMessages(prev => [...prev, {
       id: uid(), role: 'system', timestamp: Date.now(), content: result.content,
     }]);
@@ -163,8 +164,13 @@ export function App() {
     }
   }, [sessionId]);
 
-  // Ctrl+C
+  // Esc = interrupt current request, Ctrl+C = exit
   useInput((input, key) => {
+    if (key.escape && abortRef.current) {
+      abortRef.current.abort();
+      if (sessionId) cancelTurn(sessionId).catch(() => {});
+      return;
+    }
     if (key.ctrl && input === 'c') {
       if (abortRef.current) {
         abortRef.current.abort();
