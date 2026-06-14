@@ -4,12 +4,10 @@
 // Structure: one assistant message = interleaved text + tool blocks
 // rendered in CHRONOLOGICAL ORDER (not text-first-then-tools).
 //
-// Each block gets its own row:
-//   [⏺ dot minWidth=2] [content column]
-//
-// Reasoning sits ABOVE everything, in the same column width.
-// First block gets addMargin, subsequent blocks are marginTop=0
-// (they're in the same turn — doc 15 §5.2 addMargin logic).
+// Each block gets its own row: [⏺ dot minWidth=2] [content column]
+// Spacing (doc 15 §5.2):
+//   - Block 0: marginTop = addMargin ? 1 : 0 (new turn = gap, same turn = flush)
+//   - Block 1+: marginTop = 1 (consistent gap between blocks)
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
@@ -32,25 +30,20 @@ export function AssistantMessage({ msg, addMargin }: { msg: DisplayMessage; addM
 
   if (renderBlocks.length === 0 && !hasReasoning) return null;
 
-  let firstBlockRendered = false;
-
   return (
     <Box flexDirection="column" marginTop={addMargin ? 1 : 0} width="100%">
-      {/* Reasoning — above dot, same column width */}
+      {/* Reasoning — above blocks, same column width */}
       {hasReasoning && (
         <ReasoningBlock reasoning={msg.reasoning!} addMargin={false} />
       )}
 
       {/* Interleaved blocks — text and tool, in chronological order */}
       {renderBlocks.map((block, i) => {
-        // Each block is a flat row: [⏺ dot] [content]
-        // Per doc 15 §5.2: same-turn blocks use addMargin=false (marginTop=0)
-        // EXCEPT the very first visible block after reasoning gets marginTop=1
-        const needsGap = firstBlockRendered;
-        firstBlockRendered = true;
-        const marginTop = needsGap
-          ? (hasReasoning && i === 0 ? 1 : 0)
-          : (hasReasoning ? 1 : 0);
+        // Spacing: first block uses addMargin prop (0 if same turn),
+        // subsequent blocks always get 1 line gap for readability
+        const marginTop = i === 0
+          ? (hasReasoning ? 1 : 0)
+          : 1;
 
         if (block.type === 'text') {
           return (
