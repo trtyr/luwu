@@ -176,7 +176,7 @@ impl TurnEngine {
             // Build the LLM request from the current session state.
             let request = self.build_request(session);
 
-            // Call the LLM and collect its response.
+            // Call the LLM and collect its full response.
             let (assistant_content, usage) = self.call_llm(request).await?;
             last_usage = usage;
 
@@ -357,6 +357,7 @@ impl TurnEngine {
             tracing::info!("Agent turn started, messages={}", all_messages.len());
             let _turn_start = std::time::Instant::now();
             let mut total_usage = crate::llm::LlmUsage::default();
+            let mut last_usage = crate::llm::LlmUsage::default();
 
             loop {
                 // Check cancellation.
@@ -472,10 +473,11 @@ impl TurnEngine {
                         }
 
                         LlmEvent::Done(usage) => {
-                            // Accumulate usage across iterations.
+                            // Accumulate usage + track latest iteration.
                             total_usage.prompt_tokens += usage.prompt_tokens;
                             total_usage.completion_tokens += usage.completion_tokens;
                             total_usage.total_tokens += usage.total_tokens;
+                            last_usage = usage.clone();
                         }
 
                         LlmEvent::Error(msg) => {
@@ -635,6 +637,11 @@ impl TurnEngine {
                     .send(TurnEvent::IterationEnd {
                         iteration,
                         tool_calls: finalized_tool_calls.len() as u32,
+                        usage: if last_usage.total_tokens > 0 {
+                            Some(last_usage.clone())
+                        } else {
+                            None
+                        },
                     })
                     .await;
 

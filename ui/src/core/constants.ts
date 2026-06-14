@@ -49,3 +49,34 @@ export function truncateText(text: string, max = LAYOUT.MAX_DISPLAY_CHARS): stri
   const hiddenLines = text.slice(LAYOUT.TRUNCATE_HEAD, -LAYOUT.TRUNCATE_TAIL).split('\n').length;
   return `${head}\n… +${hiddenLines} lines …\n${tail}`;
 }
+
+/**
+ * Context window size (max prompt tokens) for known models.
+ * Used to compute real context usage % from LLM prompt_tokens.
+ * Returns a default of 128K if model is unknown.
+ */
+export function contextWindowFor(model: string): number {
+  const m = model.toLowerCase();
+  // ── Anthropic ──
+  if (m.includes('claude-4') || m.includes('claude-3.7')) return 200_000;
+  if (m.includes('claude-3')) return 200_000;
+  // ── OpenAI ──
+  if (m.includes('gpt-4o') || m.includes('gpt-4.1')) return 128_000;
+  if (m.includes('o1') || m.includes('o3') || m.includes('o4')) return 200_000;
+  if (m.includes('gpt-4')) return 8_192;
+  if (m.includes('gpt-3.5')) return 16_385;
+  // ── Google Gemini ──
+  if (m.includes('gemini-2') || m.includes('gemini-1.5')) return 1_000_000;
+  if (m.includes('gemini')) return 32_000;
+  // ── Zhipu GLM ──
+  if (m.includes('glm-4')) return 128_000;
+  if (m.includes('glm')) return 128_000;
+  // ── MiniMax ──
+  if (m.includes('minimax') || m.includes('abab')) return 245_760;
+  // ── DeepSeek ──
+  if (m.includes('deepseek')) return 64_000;
+  // ── Qwen ──
+  if (m.includes('qwen')) return 32_768;
+  // ── Default ──
+  return 128_000;
+}

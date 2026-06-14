@@ -159,7 +159,12 @@ pub enum TurnEvent {
 
     /// A single agentic iteration has completed (LLM call + optional tool calls).
     #[serde(rename = "iteration_end")]
-    IterationEnd { iteration: u32, tool_calls: u32 },
+    IterationEnd {
+        iteration: u32,
+        tool_calls: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<crate::llm::LlmUsage>,
+    },
 
     /// The entire turn is done.
     #[serde(rename = "done")]

@@ -8,6 +8,7 @@ import type {
 import {
   checkHealth, createSession, streamChat, cancelTurn, getModels,
 } from '../services/api.js';
+import { contextWindowFor } from '../core/constants.js';
 
 let msgCounter = 0;
 const uid = (): string => `m-${Date.now()}-${msgCounter++}`;
@@ -190,15 +191,24 @@ export function useChatSession(): ChatSession {
             break;
           }
 
-          case 'iteration_end':
+          case 'iteration_end': {
             setIteration(ev.iteration || 0);
-            setContextPct(Math.min(99, 15 + Math.floor(
-              blocks.filter(b => b.type === 'text')
-                .reduce((sum, b) => sum + (b as { type: 'text'; text: string }).text.length, 0) / 200
-            )));
+            // Real context % from LLM usage data.
+            if (ev.usage?.prompt_tokens) {
+              const max = contextWindowFor(model);
+              setContextPct(Math.min(100, Math.round((ev.usage.prompt_tokens / max) * 100)));
+            }
             break;
+          }
 
-          case 'done': break;
+          case 'done': {
+            // Also update context % from final usage.
+            if (ev.usage?.prompt_tokens) {
+              const max = contextWindowFor(model);
+              setContextPct(Math.min(100, Math.round((ev.usage.prompt_tokens / max) * 100)));
+            }
+            break;
+          }
           case 'cancelled': syncBlocks(); break;
           case 'error':
             currentText += `\n⚠ ${ev.message || 'Unknown error'}`;
