@@ -28,7 +28,6 @@ interface GitStatus {
 
 function getGitStatus(cwd: string): GitStatus | null {
   try {
-    // git status --porcelain → dirty/clean/conflict
     const status = Bun.spawnSync({
       cmd: ['git', '--no-optional-locks', 'status', '--porcelain'],
       cwd,
@@ -40,7 +39,6 @@ function getGitStatus(cwd: string): GitStatus | null {
     const conflict = lines.some(l => l.includes('UU') || l.includes('AA') || l.includes('DD'));
     const clean = lines.length === 0;
 
-    // ahead/behind via rev-list
     const ahead = Bun.spawnSync({
       cmd: ['git', '--no-optional-locks', 'rev-list', '--count', '@{u}..HEAD'],
       cwd,
@@ -76,7 +74,6 @@ const SESSION_START = Date.now();
 export function StatusLine({
   model, sessionId, cwd, gitBranch, contextPercent, contextTokens, phase, iteration,
 }: StatusLineProps) {
-  // ── Git status polling (every 5s, CCometixLine pattern) ──
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   useEffect(() => {
     const poll = () => setGitStatus(getGitStatus(cwd));
@@ -85,18 +82,15 @@ export function StatusLine({
     return () => clearInterval(timer);
   }, [cwd]);
 
-  // Context color zones (pi-observability standard)
   const ctxColor: string =
     contextPercent <= 70 ? theme.success :
     contextPercent <= 85 ? theme.warning :
     theme.error;
 
-  // Context progress bar
   const barWidth = 10;
   const filled = Math.round((contextPercent / 100) * barWidth);
   const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
 
-  // Runtime timer
   const [runtime, setRuntime] = useState('0s');
   useEffect(() => {
     const update = () => {
@@ -110,14 +104,12 @@ export function StatusLine({
     return () => clearInterval(interval);
   }, []);
 
-  // Context-aware hint line
   const hint = (phase === 'thinking' || phase === 'streaming')
     ? 'esc to interrupt'
     : '? for shortcuts · ↑↓ history · / commands';
 
   const sep = <Text color={theme.subtle}>{' · '}</Text>;
 
-  // Git status indicator
   let gitIndicator: string = '';
   let gitColor: string = theme.suggestion;
   if (gitStatus) {
@@ -128,28 +120,22 @@ export function StatusLine({
     if (gitStatus.behind > 0) gitIndicator += ` ↓${gitStatus.behind}`;
   }
 
-  // Token display
   const tokenStr = contextTokens && contextTokens > 0 ? formatTokens(contextTokens) : null;
 
   return (
     <Box flexDirection="column">
-      {/* Main status line — segments joined by ' · ' */}
       <Box>
-        {/* Segment: Model */}
         <Text color={theme.permission}>{'❯ '}</Text>
         <Text color={theme.inactive}>{model}</Text>
 
         {sep}
 
-        {/* Segment: Runtime */}
         <Text color={theme.subtle}>⏱ {runtime}</Text>
 
         {sep}
 
-        {/* Segment: Working directory */}
         <Text color={theme.inactive}>{shortenPath(cwd)}</Text>
 
-        {/* Segment: Git branch + status */}
         {gitBranch && (
           <>
             {sep}
@@ -159,11 +145,9 @@ export function StatusLine({
 
         {sep}
 
-        {/* Segment: Context window (bar + % + tokens) */}
         <Text color={ctxColor}>[{bar}] {contextPercent}%</Text>
         {tokenStr && <Text color={theme.subtle}> {tokenStr}</Text>}
 
-        {/* Segment: Iteration */}
         {iteration !== undefined && iteration > 0 && (
           <>
             {sep}
@@ -171,7 +155,6 @@ export function StatusLine({
           </>
         )}
 
-        {/* Segment: Session ID */}
         {sessionId && (
           <>
             {sep}
@@ -180,7 +163,6 @@ export function StatusLine({
         )}
       </Box>
 
-      {/* Hint line */}
       <Box>
         <Text color={theme.inactive}>{hint}</Text>
       </Box>
@@ -189,7 +171,6 @@ export function StatusLine({
 }
 
 function shortenPath(p: string): string {
-  const parts = p.replace(/^\/Users\/[^/]+/, '~').split('/');
-  if (parts.length <= 3) return parts.join('/');
-  return parts[0] + '/…/' + parts.slice(-2).join('/');
+  const parts = p.replace(/\/$/, '').split('/');
+  return parts[parts.length - 1] || p;
 }
