@@ -51,8 +51,8 @@ export function Select({ options, defaultValue, onSelect, onCancel, visibleCount
         const isFocused = realIndex === focusedIndex;
         return (
           <Box key={opt.value}>
-            <Text color={isFocused ? theme.suggestion : theme.subtle}>{isFocused ? '▸ ' : '  '}</Text>
-            <Text color={isFocused ? theme.text : theme.inactive} bold={isFocused}>
+            <Text color={isFocused ? theme.text : theme.subtle}>{isFocused ? '❯ ' : '  '}</Text>
+            <Text dimColor={!isFocused} color={isFocused ? theme.text : undefined} bold={isFocused}>
               {opt.label}
             </Text>
             {opt.description && (

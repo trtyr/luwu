@@ -1,7 +1,7 @@
 // components/PromptInput.tsx — Claude Code 1:1 input
 // Source: docs/16-input-box-detailed-ui.md
 // Border: round, top+bottom only (no left/right), always promptBorder
-// Pointer: ❯ figures.pointer in subtle color
+// Pointer: ❯ figures.pointer in subtle color (not permission blue)
 // Cursor: inverse video block ▎ in claude orange
 import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
@@ -102,8 +102,8 @@ export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInpu
         flexDirection="row"
         alignItems="flex-start"
       >
-        {/* Claude Code ModeIndicator: ❯ pointer */}
-        <Text color={disabled ? theme.subtle : theme.permission} bold>{'❯ '}</Text>
+        {/* Claude Code ModeIndicator: ❯ pointer in subtle color */}
+        <Text color={theme.subtle} bold>{'❯ '}</Text>
         <Box flexGrow={1} flexShrink={1}>
           {value.length > 0 ? (
             <Text>

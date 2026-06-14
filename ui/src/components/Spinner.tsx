@@ -104,8 +104,8 @@ export function Spinner({ phase, verb }: Props) {
 
   if (phase !== 'thinking' && thinkingStatus === null) return null;
 
-  // Completion line — "Crunched for 2.4s"
-  const completionVerb = pick(['Baked', 'Brewed', 'Churned', 'Cogitated', 'Cooked', 'Crunched', 'Sautéed', 'Worked']);
+  // Completion line — past tense of mount verb (stable, not re-randomized each render)
+  const completionVerb = mountVerb.replace(/ing$/, 'ed');
 
   if (phase !== 'thinking' && typeof thinkingStatus === 'number') {
     return (
