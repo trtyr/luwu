@@ -2,8 +2,8 @@
 // Source: docs/04-tool-use-ui.md
 // Layout: SAME as assistant text — flat row [● dot minWidth=2] [content column]
 // NOT wrapped in MessageResponse — tools are independent rows
-// Status indicator: BLACK_CIRCLE for ALL states, COLOR differentiates:
-//   - running/unresolved: dimColor + BLINKING animation
+// Status: BLACK_CIRCLE for ALL states, COLOR differentiates:
+//   - running/unresolved: inactive color + BLINKING animation
 //   - success: theme.success green
 //   - error: theme.error red
 import React, { useState, useEffect } from 'react';
@@ -17,7 +17,7 @@ export function ToolResult({ tool }: { tool: ToolCallInfo }) {
   const isError = tool.status === 'error';
   const isDone = tool.status === 'done';
 
-  // Blink animation for running/unresolved tools
+  // Blink animation for running tools
   const [visible, setVisible] = useState(true);
   useEffect(() => {
     if (!isRunning) return;
@@ -25,8 +25,8 @@ export function ToolResult({ tool }: { tool: ToolCallInfo }) {
     return () => clearInterval(t);
   }, [isRunning]);
 
-  // Circle color by status
-  const circleColor = isDone ? theme.success : isError ? theme.error : undefined;
+  // Circle color: running = inactive (dimmed), done = success, error = error
+  const circleColor = isDone ? theme.success : isError ? theme.error : theme.inactive;
   const circleChar = (isRunning && !visible) ? ' ' : LAYOUT.ASSISTANT_DOT;
 
   // Parse args — extract readable parameter
@@ -50,9 +50,7 @@ export function ToolResult({ tool }: { tool: ToolCallInfo }) {
     <Box alignItems="flex-start" flexDirection="row" width="100%" marginTop={1}>
       {/* Status circle — same minWidth=2 as assistant dot */}
       <Box minWidth={LAYOUT.DOT_MIN_WIDTH}>
-        <Text color={circleColor} dimColor={isRunning}>
-          {circleChar}
-        </Text>
+        <Text color={circleColor}>{circleChar}</Text>
       </Box>
       {/* Content column */}
       <Box flexDirection="column" flexShrink={1} flexGrow={1}>

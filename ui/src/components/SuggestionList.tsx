@@ -1,8 +1,9 @@
 // components/SuggestionList.tsx — Claude Code 1:1 command panel
 // Source: docs/20-command-panels-ui.md
 // ▔ separator line in permission color at top
-// Selected: ❯ prefix in normal text color
-// Unselected: space prefix, dimColor text
+// Selected: ❯ prefix in text color
+// Unselected: space prefix, inactive color
+// dimColor = theme.inactive (NOT ANSI dim)
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
@@ -44,13 +45,13 @@ export function SuggestionList({
             ) : (
               <Text>{'  '}</Text>
             )}
-            <Text dimColor={!selected} color={selected ? theme.text : undefined}>
+            <Text color={selected ? theme.text : theme.inactive}>
               {s.displayText}{padding}
             </Text>
             {s.description && (
               <>
-                <Text dimColor> – </Text>
-                <Text dimColor>{s.description}</Text>
+                <Text color={theme.inactive}> – </Text>
+                <Text color={theme.inactive}>{s.description}</Text>
               </>
             )}
           </Box>
