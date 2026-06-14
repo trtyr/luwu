@@ -1,9 +1,12 @@
 // components/Spinner.tsx — Claude Code 1:1 bouncing spinner
 // Source: docs/05-spinner-ui.md
 // Frames: ·✢✳✶✻✽ reversed = bouncing, 50ms interval
+// TaskList integration: renders below verb when showTasks is true (doc 27)
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
+import { TaskList } from './TaskList.js';
+import type { TaskItem } from '../core/types.js';
 
 // Claude Code exact frames: DEFAULT + reversed DEFAULT = bouncing
 const SPINNER_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
@@ -57,9 +60,11 @@ function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length
 interface Props {
   phase: string;
   verb?: string;
+  tasks?: TaskItem[];
+  showTasks?: boolean;
 }
 
-export function Spinner({ phase, verb }: Props) {
+export function Spinner({ phase, verb, tasks, showTasks }: Props) {
   const [mountVerb] = useState(() => pick(SPINNER_VERBS));
   const [tip] = useState(() => pick(TIPS));
   const [frameIdx, setFrameIdx] = useState(0);
@@ -116,7 +121,11 @@ export function Spinner({ phase, verb }: Props) {
     );
   }
 
-  const effectiveVerb = verb || mountVerb;
+  // Verb priority: tool verb override → in_progress task subject → random mount verb
+  const inProgressTask = tasks?.find(t => t.status === 'in_progress');
+  const effectiveVerb = verb || inProgressTask?.subject || mountVerb;
+
+  const hasVisibleTasks = showTasks && tasks && tasks.length > 0;
 
   return (
     <Box flexDirection="column" width="100%" alignItems="flex-start">
@@ -126,9 +135,13 @@ export function Spinner({ phase, verb }: Props) {
           <Text color={theme.text}>{effectiveVerb}…</Text>
         </Text>
       </Box>
-      <Box paddingLeft={2}>
-        <Text color={theme.inactive}>{tip}</Text>
-      </Box>
+      {hasVisibleTasks ? (
+        <TaskList tasks={tasks!} />
+      ) : (
+        <Box paddingLeft={2}>
+          <Text color={theme.inactive}>{tip}</Text>
+        </Box>
+      )}
     </Box>
   );
 }

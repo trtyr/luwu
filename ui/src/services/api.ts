@@ -1,6 +1,6 @@
 // services/api.ts — luwu server API client
 // (migrated from client.ts, same API surface)
-import type { StreamEvent, ModelInfo, StatsResponse } from '../core/types.js';
+import type { StreamEvent, ModelInfo, StatsResponse, TaskItem } from '../core/types.js';
 
 export const BASE_URL = process.env.LUWU_URL || 'http://127.0.0.1:51740';
 
@@ -118,4 +118,11 @@ export async function streamChat(
 
 export async function cancelTurn(sessionId: string): Promise<void> {
   await fetch(`${BASE_URL}/v1/sessions/${sessionId}/cancel`, { method: 'POST' });
+}
+
+export async function getTasks(sessionId: string): Promise<TaskItem[]> {
+  const res = await fetch(`${BASE_URL}/v1/sessions/${sessionId}/tasks`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.tasks || []) as TaskItem[];
 }

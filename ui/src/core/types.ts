@@ -63,3 +63,12 @@ export interface SuggestionItem {
   displayText: string;
   description: string;
 }
+
+export interface TaskItem {
+  id: number;
+  subject: string;
+  description?: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  blocked_by?: number[];
+  owner?: string;
+}

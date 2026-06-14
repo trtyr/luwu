@@ -111,6 +111,11 @@ pub fn router(state: AppState) -> Router {
             "/v1/sessions/{id}/history",
             axum::routing::get(handlers::search_history),
         )
+        // Task list endpoint.
+        .route(
+            "/v1/sessions/{id}/tasks",
+            axum::routing::get(handlers::list_tasks),
+        )
         // Skill endpoints.
         .route("/v1/stats", axum::routing::get(handlers::stats))
         .route("/v1/skills", axum::routing::get(handlers::list_skills))
