@@ -9,6 +9,7 @@ export type OverlayType = 'help' | 'stats' | 'skills' | 'sessions' | 'model';
 export type CommandResult =
   | { type: 'clear' }
   | { type: 'exit' }
+  | { type: 'newSession' }
   | { type: 'overlay'; overlay: OverlayType }
   | { type: 'setModel'; model: string };
 
@@ -16,7 +17,6 @@ export function useCommands(model: string, setModel: (m: string) => void) {
   const executeCommand = useCallback(async (raw: string): Promise<CommandResult> => {
     const parts = raw.slice(1).split(/\s+/);
     const cmd = parts[0]?.toLowerCase();
-    const arg = parts[1];
 
     switch (cmd) {
       case 'help': case 'h': case '?':
@@ -25,11 +25,10 @@ export function useCommands(model: string, setModel: (m: string) => void) {
       case 'clear': case 'cls':
         return { type: 'clear' };
 
+      case 'new':
+        return { type: 'newSession' };
+
       case 'model':
-        if (arg) {
-          setModel(arg);
-          return { type: 'setModel', model: arg };
-        }
         return { type: 'overlay', overlay: 'model' };
 
       case 'stats':
@@ -47,7 +46,7 @@ export function useCommands(model: string, setModel: (m: string) => void) {
       default:
         return { type: 'overlay', overlay: 'help' };
     }
-  }, [model, setModel]);
+  }, []);
 
   const getCommandList = useCallback((): CommandDef[] => COMMANDS, []);
   return { executeCommand, getCommandList };

@@ -5,6 +5,7 @@ import type { CommandDef } from './types.js';
 export const COMMANDS: CommandDef[] = [
   { name: 'help', description: '显示帮助信息', aliases: ['h', '?'] },
   { name: 'clear', description: '清空消息历史', aliases: ['cls'] },
+  { name: 'new', description: '创建新会话' },
   { name: 'model', description: '显示当前模型' },
   { name: 'stats', description: '显示运行时统计' },
   { name: 'skills', description: '列出可用技能' },

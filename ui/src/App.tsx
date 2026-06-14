@@ -61,6 +61,7 @@ export function App() {
     const result = await executeCommand(raw);
     if (result.type === 'clear') { chat.setMessages([]); return; }
     if (result.type === 'exit') { exit(); return; }
+    if (result.type === 'newSession') { await chat.newSession(); return; }
     if (result.type === 'overlay') { setOverlay(result.overlay); return; }
     if (result.type === 'setModel') {
       chat.setModel(result.model);

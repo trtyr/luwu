@@ -38,6 +38,7 @@ export interface ChatSession {
   sendMessage: (text: string) => Promise<void>;
   cancel: () => void;
   restoreSession: (id: string) => void;
+  newSession: () => Promise<void>;
   abortRef: React.MutableRefObject<AbortController | null>;
 }
 
@@ -88,7 +89,6 @@ export function useChatSession(): ChatSession {
 
   // ── Restore/switch to an existing session ──
   const restoreSession = useCallback((id: string) => {
-    // Cancel any in-flight request
     if (abortRef.current) {
       abortRef.current.abort();
       if (sessionId) cancelTurn(sessionId).catch(() => {});
@@ -102,6 +102,37 @@ export function useChatSession(): ChatSession {
       id: uid(), role: 'system', timestamp: Date.now(),
       content: `已切换到 session ${id.slice(0, 8)}… · 服务器端保留完整对话历史`,
     }]);
+  }, [sessionId]);
+
+  // ── Create a brand-new session ──
+  // Calls createSession() API → setSessionId(newId) → StatusLine auto-updates
+  const newSession = useCallback(async () => {
+    // Cancel any in-flight request
+    if (abortRef.current) {
+      abortRef.current.abort();
+      if (sessionId) cancelTurn(sessionId).catch(() => {});
+    }
+    // Reset state immediately so status bar reflects "switching"
+    setContextPct(0);
+    setIteration(0);
+    setSpinnerVerb(undefined);
+    setPhase('connecting');
+    setMessages([{
+      id: uid(), role: 'system', timestamp: Date.now(),
+      content: '正在创建新会话…',
+    }]);
+    try {
+      const newId = await createSession();
+      setSessionId(newId);
+      setPhase('ready');
+      setMessages([{
+        id: uid(), role: 'system', timestamp: Date.now(),
+        content: `新会话 ${newId.slice(0, 8)}… 已创建 · 开始对话吧`,
+      }]);
+    } catch (e) {
+      setPhase('error');
+      setError(`创建新会话失败: ${String(e)}`);
+    }
   }, [sessionId]);
 
   // ── Send message: builds blocks[] in chronological order ──
@@ -212,7 +243,6 @@ export function useChatSession(): ChatSession {
 
           case 'iteration_end': {
             setIteration(ev.iteration || 0);
-            // Real context % from LLM usage data.
             if (ev.usage?.prompt_tokens) {
               const max = contextWindowFor(model);
               setContextPct(Math.min(100, Math.round((ev.usage.prompt_tokens / max) * 100)));
@@ -221,7 +251,6 @@ export function useChatSession(): ChatSession {
           }
 
           case 'done': {
-            // Also update context % from final usage.
             if (ev.usage?.prompt_tokens) {
               const max = contextWindowFor(model);
               setContextPct(Math.min(100, Math.round((ev.usage.prompt_tokens / max) * 100)));
@@ -251,6 +280,6 @@ export function useChatSession(): ChatSession {
   return {
     messages, phase, sessionId, error, model, gitBranch,
     contextPct, iteration, spinnerVerb,
-    setMessages, setModel, sendMessage, cancel, restoreSession, abortRef,
+    setMessages, setModel, sendMessage, cancel, restoreSession, newSession, abortRef,
   };
 }
