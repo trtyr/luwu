@@ -78,13 +78,20 @@ export function PromptInput({ value, onValueChange, onSubmit, onCommand, disable
     // Ctrl+U clear
     if (key.ctrl && input === 'u') { setValue(''); return; }
 
-    // Printable (CJK-safe)
+    // Printable (CJK-safe) + Paste support
+    // Terminal paste sends multi-char input containing \n, \r, tabs, etc.
+    // Filter to printable chars only, replacing newlines with spaces.
     if (!key.ctrl && !key.meta && !key.escape && !key.tab && !key.return && !key.upArrow && !key.downArrow) {
-      const ok = input.length > 0 && [...input].every(ch => {
-        const code = ch.codePointAt(0)!;
-        return code >= 0x20 || ch === ' ';
-      });
-      if (ok) setValue(value + input);
+      const filtered = [...input]
+        .filter(ch => {
+          const code = ch.codePointAt(0)!;
+          return code >= 0x20 || ch === '\t';
+        })
+        .join('')
+        .replace(/\t/g, '    ')   // tabs → 4 spaces
+        .replace(/\r\n?/g, ' ')  // CRLF / CR → space
+        .replace(/\n/g, ' ');     // LF → space
+      if (filtered.length > 0) setValue(value + filtered);
     }
   }, [disabled, value, isVisible, selectedSuggestion, history, selectUp, selectDown, completeSuggestion, setValue, onSubmit, onCommand]));
 
