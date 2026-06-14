@@ -11,6 +11,8 @@
 //   We must flatten to extract inline tokens (strong/em/codespan/text) for rendering.
 // - TABLE: rendered from token.header + token.rows with inline parsing + CJK-aware padding
 // - TASK LIST: [x] → ✓ green, [ ] → ☐ inactive
+// - CJK FIX: list markers and blockquote prefixes are in the SAME <Text> as content,
+//   NOT separate <Text> siblings — Ink can corrupt multi-byte CJK chars at Text boundaries
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
@@ -166,23 +168,29 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
             // Check for task list item: [x] or [ ]
             const rawText = inlineTokens.map((t: AnyToken) => t.text || '').join('');
             const task = checkTaskItem(rawText);
-            if (task) {
-              if (inlineTokens[0]?.text) inlineTokens[0].text = task.text;
-              return (
-                <Box key={i} flexDirection="row">
-                  <Text color={tc}>{'  '.repeat(token.depth || 0)}</Text>
-                  <Text color={task.checked ? theme.success : theme.inactive}>
-                    {task.checked ? '✓ ' : '☐ '}
-                  </Text>
-                  <Text color={tc}>{renderInline(inlineTokens, tc, cc)}</Text>
-                </Box>
-              );
+
+            // IMPORTANT: marker + content in ONE <Text> — not separate <Text> siblings.
+            // Ink corrupts multi-byte CJK chars at <Text> element boundaries in row layout.
+            const indent = '  '.repeat(token.depth || 0);
+            const marker = task
+              ? (task.checked ? '✓ ' : '☐ ')
+              : (token.ordered ? `${i + 1}. ` : '- ');
+
+            if (task && inlineTokens[0]?.text) {
+              inlineTokens[0].text = task.text;
             }
 
+            const markerColor = task
+              ? (task.checked ? theme.success : theme.inactive)
+              : tc;
+
             return (
-              <Box key={i} flexDirection="row">
-                <Text color={tc}>{'  '.repeat(token.depth || 0)}{token.ordered ? `${i + 1}. ` : '- '}</Text>
-                <Text color={tc}>{renderInline(inlineTokens, tc, cc)}</Text>
+              <Box key={i}>
+                <Text color={tc}>
+                  {indent}
+                  <Text color={markerColor}>{marker}</Text>
+                  {renderInline(inlineTokens, tc, cc)}
+                </Text>
               </Box>
             );
           })}
@@ -241,6 +249,7 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
     case 'blockquote': {
       // token.tokens contains block-level tokens (paragraph, etc.)
       // Split inline tokens at \n boundaries → each visual line gets ▎ prefix
+      // CRITICAL: ▎ prefix and content in SAME <Text> to prevent CJK boundary corruption
       const bqBlocks: AnyToken[] = token.tokens || [];
       type BqLine = { inlineToks: AnyToken[]; subBlock?: AnyToken };
       const bqLines: BqLine[] = [];
@@ -268,12 +277,17 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
       return (
         <Box flexDirection="column">
           {bqLines.map((line, li) => (
-            <Box key={li} flexDirection="row">
-              <Text color={theme.inactive}>{'▎ '}</Text>
+            <Box key={li}>
               {line.subBlock ? (
-                <TokenRenderer token={line.subBlock} tc={tc} cc={cc} dimColor={dimColor} />
+                <Text color={theme.inactive}>
+                  {'▎ '}
+                  <TokenRenderer token={line.subBlock} tc={tc} cc={cc} dimColor={dimColor} />
+                </Text>
               ) : (
-                <Text color={tc} italic>{renderInline(line.inlineToks, tc, cc)}</Text>
+                <Text color={tc} italic>
+                  <Text color={theme.inactive}>{'▎ '}</Text>
+                  {renderInline(line.inlineToks, tc, cc)}
+                </Text>
               )}
             </Box>
           ))}
