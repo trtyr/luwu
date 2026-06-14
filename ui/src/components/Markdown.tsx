@@ -1,7 +1,7 @@
 // Markdown renderer for Ink TUI
 // Based on Claude Code's formatToken (markdown.ts):
 // - code: plain text (no fence, no color)
-// - blockquote: ▎ prefix + italic
+// - blockquote: ▎ prefix + italic + PARSED inline tokens (not raw text)
 // - codespan: permission color
 // - strikethrough: DISABLED
 // - dimColor prop: theme.inactive instead of theme.text
@@ -9,7 +9,8 @@
 //   Structural blocks (code/list/blockquote/heading) get their own Box with marginTop.
 // - LIST ITEMS: marked v18 nests block-level wrappers (paragraph) inside list_item.tokens.
 //   We must flatten to extract inline tokens (strong/em/codespan/text) for rendering.
-// - TABLE: rendered from token.header + token.rows (token.text is empty in marked!)
+// - TABLE: rendered from token.header + token.rows with inline parsing + CJK-aware padding
+// - TASK LIST: [x] → ✓ green, [ ] → ☐ inactive
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
@@ -28,6 +29,54 @@ function ensureMarkedConfig() {
   if (markedConfigured) return;
   markedConfigured = true;
   marked.use({ tokenizer: { del() { return undefined; } } });
+}
+
+// ── CJK display width — East Asian chars take 2 terminal columns ──
+const DOUBLE_WIDTH_RANGES: [number, number][] = [
+  [0x1100, 0x115f], [0x2329, 0x232a], [0x2e80, 0x9fff], [0xa000, 0xa4cf],
+  [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60],
+  [0xffe0, 0xffe6], [0x1f300, 0x1faff], [0x20000, 0x2fffd], [0x30000, 0x3fffd],
+];
+
+function displayWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) || 0;
+    w += DOUBLE_WIDTH_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi) ? 2 : 1;
+  }
+  return w;
+}
+
+function padEndDisplay(s: string, targetWidth: number): string {
+  const pad = targetWidth - displayWidth(s);
+  return pad > 0 ? s + ' '.repeat(pad) : s;
+}
+
+// ── Flatten marked v18 block-level wrappers to inline tokens ──
+function flattenInline(tokens: AnyToken[]): AnyToken[] {
+  let result: AnyToken[] = [];
+  for (const t of tokens || []) {
+    if (t.type === 'text' || t.type === 'paragraph') {
+      result = result.concat(t.tokens ? flattenInline(t.tokens) : [{ type: 'text', text: t.text || '' }]);
+    } else {
+      result.push(t);
+    }
+  }
+  return result;
+}
+
+// ── Task list checkbox detection ──
+function checkTaskItem(text: string): { checked: boolean; text: string } | null {
+  const m = text.match(/^\[([ xX])\]\s*(.*)/);
+  if (!m) return null;
+  return { checked: m[1].toLowerCase() === 'x', text: m[2] };
+}
+
+// ── Extract plain text from a cell token (for width calculation) ──
+function cellToText(cell: AnyToken): string {
+  if (typeof cell === 'string') return cell;
+  const toks = cell?.tokens || [{ type: 'text', text: cell?.text || '' }];
+  return toks.map((t: AnyToken) => t.text || '').join('');
 }
 
 interface MarkdownProps {
@@ -80,7 +129,7 @@ export function Markdown({ children, dimColor = false }: MarkdownProps) {
                 {group.tokens.map((ptok: AnyToken, pi: number) => (
                   <React.Fragment key={pi}>
                     {pi > 0 ? '\n' : ''}
-                    {renderInline(ptok.tokens || [{ type: 'text', text: ptok.text }], tc, cc)}
+                    {renderInline(flattenInline([ptok]), tc, cc)}
                   </React.Fragment>
                 ))}
               </Text>
@@ -111,21 +160,24 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
       return (
         <Box flexDirection="column">
           {items.map((item: AnyToken, i: number) => {
-            // marked v18: item.tokens contains block-level wrappers (paragraph, list_item, etc.)
-            // We must extract the inner inline tokens from each wrapper, otherwise
-            // **bold**, `code`, *italic* inside list items won't be parsed.
-            let inlineTokens: AnyToken[] = [];
-            if (item.tokens) {
-              for (const t of item.tokens) {
-                if (t.type === 'text' || t.type === 'paragraph') {
-                  inlineTokens = inlineTokens.concat(t.tokens || [{ type: 'text', text: t.text }]);
-                } else {
-                  inlineTokens.push(t);
-                }
-              }
-            } else {
-              inlineTokens = [{ type: 'text', text: item.text || '' }];
+            const inlineTokens = flattenInline(item.tokens || [{ type: 'text', text: item.text || '' }]);
+
+            // Check for task list item: [x] or [ ]
+            const rawText = inlineTokens.map((t: AnyToken) => t.text || '').join('');
+            const task = checkTaskItem(rawText);
+            if (task) {
+              if (inlineTokens[0]?.text) inlineTokens[0].text = task.text;
+              return (
+                <Box key={i} flexDirection="row">
+                  <Text color={tc}>{'  '.repeat(token.depth || 0)}</Text>
+                  <Text color={task.checked ? theme.success : theme.inactive}>
+                    {task.checked ? '✓ ' : '☐ '}
+                  </Text>
+                  <Text color={tc}>{renderInline(inlineTokens, tc, cc)}</Text>
+                </Box>
+              );
             }
+
             return (
               <Box key={i} flexDirection="row">
                 <Text color={tc}>{'  '.repeat(token.depth || 0)}{token.ordered ? `${i + 1}. ` : '- '}</Text>
@@ -137,62 +189,96 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
       );
     }
     case 'table': {
-      // marked table token: header=[...], rows=[[...], ...], align=[...]
-      // token.text is EMPTY — must build from header + rows
-      const header: string[] = token.header || [];
-      const rows: string[][] = token.rows || [];
+      const header: AnyToken[] = token.header || [];
+      const rows: AnyToken[][] = token.rows || [];
       if (header.length === 0 && rows.length === 0) return null;
 
-      // Render as aligned text columns (no fancy box-drawing — keep it simple for TUI)
       const colCount = header.length || (rows[0]?.length ?? 0);
       if (colCount === 0) return null;
 
-      // Calculate column widths
+      // Column widths using DISPLAY width (CJK = 2)
       const widths: number[] = new Array(colCount).fill(0);
-      const headerTexts = header.map((h: AnyToken) => typeof h === 'string' ? h : (h.text || ''));
-      headerTexts.forEach((t: string, i: number) => { if (i < colCount) widths[i] = Math.max(widths[i], t.length); });
+      header.forEach((h, i) => { if (i < colCount) widths[i] = Math.max(widths[i], displayWidth(cellToText(h))); });
       rows.forEach((row: AnyToken[]) => {
         row.forEach((cell: AnyToken, i: number) => {
-          const text = typeof cell === 'string' ? cell : (cell?.text || '');
-          if (i < colCount) widths[i] = Math.max(widths[i], text.length);
+          if (i < colCount) widths[i] = Math.max(widths[i], displayWidth(cellToText(cell)));
         });
       });
 
-      const pad = (s: string, i: number) => s.padEnd(widths[i]);
-
       return (
         <Box flexDirection="column">
-          {/* Header row */}
+          {/* Header */}
           <Text bold color={tc}>
-            {headerTexts.map((t: string, i: number) => pad(t, i)).join('  ')}
+            {header.map((h: AnyToken, i: number) => padEndDisplay(cellToText(h), widths[i])).join('  ')}
           </Text>
           {/* Separator */}
           <Text color={theme.inactive}>
             {widths.map((w: number) => '─'.repeat(w)).join('──')}
           </Text>
-          {/* Data rows */}
+          {/* Data rows — inline rendering + trailing pad */}
           {rows.map((row: AnyToken[], ri: number) => (
-            <Text key={ri} color={tc}>
-              {row.map((cell: AnyToken, ci: number) => {
-                const text = typeof cell === 'string' ? cell : (cell?.text || '');
-                return pad(text, ci);
-              }).join('  ')}
-            </Text>
-          ))}
-        </Box>
-      );
-    }
-    case 'blockquote':
-      return (
-        <Box flexDirection="column">
-          {(token.text || '').split('\n').filter(Boolean).map((line: string, i: number) => (
-            <Box key={i} flexDirection="row">
-              <Text color={theme.inactive}>{'▎ '}</Text>
-              <Text color={tc} italic>{line}</Text>
+            <Box key={ri} flexDirection="row">
+              {row.map((cell: AnyToken, ci: number) => (
+                <React.Fragment key={ci}>
+                  {ci > 0 && <Text color={tc}>{'  '}</Text>}
+                  <Text color={tc}>
+                    {renderInline(
+                      typeof cell === 'string'
+                        ? [{ type: 'text', text: cell }]
+                        : (cell?.tokens || [{ type: 'text', text: cell?.text || '' }]),
+                      tc, cc
+                    )}
+                  </Text>
+                  <Text color={tc}>{' '.repeat(Math.max(0, widths[ci] - displayWidth(cellToText(cell))))}</Text>
+                </React.Fragment>
+              ))}
             </Box>
           ))}
         </Box>
       );
+    }
+    case 'blockquote': {
+      // token.tokens contains block-level tokens (paragraph, etc.)
+      // Split inline tokens at \n boundaries → each visual line gets ▎ prefix
+      const bqBlocks: AnyToken[] = token.tokens || [];
+      type BqLine = { inlineToks: AnyToken[]; subBlock?: AnyToken };
+      const bqLines: BqLine[] = [];
+
+      for (const blk of bqBlocks) {
+        if (blk.type === 'paragraph' || blk.type === 'text') {
+          const inlineToks = flattenInline([blk]);
+          let current: AnyToken[] = [];
+          for (const tok of inlineToks) {
+            if (tok.type === 'text' && tok.text?.includes('\n')) {
+              for (const [pi, part] of tok.text.split('\n').entries()) {
+                if (pi > 0) { bqLines.push({ inlineToks: current }); current = []; }
+                if (part) current.push({ type: 'text', text: part });
+              }
+            } else {
+              current.push(tok);
+            }
+          }
+          if (current.length > 0) bqLines.push({ inlineToks: current });
+        } else {
+          bqLines.push({ inlineToks: [], subBlock: blk });
+        }
+      }
+
+      return (
+        <Box flexDirection="column">
+          {bqLines.map((line, li) => (
+            <Box key={li} flexDirection="row">
+              <Text color={theme.inactive}>{'▎ '}</Text>
+              {line.subBlock ? (
+                <TokenRenderer token={line.subBlock} tc={tc} cc={cc} dimColor={dimColor} />
+              ) : (
+                <Text color={tc} italic>{renderInline(line.inlineToks, tc, cc)}</Text>
+              )}
+            </Box>
+          ))}
+        </Box>
+      );
+    }
     case 'hr':
       return <Text color={theme.inactive}>{'─'.repeat(40)}</Text>;
     case 'html':
@@ -213,7 +299,7 @@ function renderInline(tokens: AnyToken[], tc: string, cc: string): React.ReactNo
       case 'codespan':
         return <Text key={i} color={cc}>{tok.text}</Text>;
       case 'link':
-        return <Text key={i} color={dimColorSafe(cc)}>{tok.text || tok.href}</Text>;
+        return <Text key={i} color={cc}>{tok.text || tok.href}</Text>;
       case 'text':
         if (tok.tokens && tok.tokens.length > 1) {
           return <React.Fragment key={i}>{renderInline(tok.tokens, tc, cc)}</React.Fragment>;
@@ -227,8 +313,4 @@ function renderInline(tokens: AnyToken[], tc: string, cc: string): React.ReactNo
         return <Text key={i} color={tc}>{tok.text || ''}</Text>;
     }
   });
-}
-
-function dimColorSafe(cc: string): string {
-  return cc === theme.permission ? theme.inactive : cc;
 }
