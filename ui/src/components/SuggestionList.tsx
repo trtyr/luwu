@@ -1,9 +1,9 @@
-// components/SuggestionList.tsx — Claude Code 1:1 command panel
-// Source: docs/20-command-panels-ui.md
-// ▔ separator line in permission color at top
-// Selected: ❯ prefix in text color
-// Unselected: space prefix, inactive color
-// dimColor = theme.inactive (NOT ANSI dim)
+// components/SuggestionList.tsx — Claude Code 1:1
+// Source: docs/23-slash-command-system.md §5.2
+// KEY: NO ❯ pointer — selection shown by COLOR ONLY
+//   selected   → suggestion color (text)
+//   unselected → inactive color
+// ▔ separator line in permission color at top (non-fullscreen inline)
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
@@ -31,7 +31,7 @@ export function SuggestionList({
 
   return (
     <Box flexDirection="column" justifyContent="flex-end">
-      {/* ▔ separator line in permission color (Claude Code 1:1) */}
+      {/* ▔ separator line in permission color */}
       <Text color={theme.permission}>{'▔'.repeat(50)}</Text>
       {visible.map((s, i) => {
         const realIdx = start + i;
@@ -40,19 +40,14 @@ export function SuggestionList({
 
         return (
           <Box key={s.id}>
-            {selected ? (
-              <Text color={theme.text}>{'❯ '}</Text>
-            ) : (
-              <Text>{'  '}</Text>
-            )}
-            <Text color={selected ? theme.text : theme.inactive}>
+            {/* NO ❯ pointer — color-only differentiation per doc 23 §5.2 */}
+            <Text color={selected ? theme.suggestion : theme.inactive}>
               {s.displayText}{padding}
             </Text>
             {s.description && (
-              <>
-                <Text color={theme.inactive}> – </Text>
-                <Text color={theme.inactive}>{s.description}</Text>
-              </>
+              <Text color={selected ? theme.suggestion : theme.inactive}>
+                {'  '}{s.description}
+              </Text>
             )}
           </Box>
         );

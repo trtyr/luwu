@@ -29,7 +29,7 @@ function getGitBranchSync(): string | null {
   } catch { return null; }
 }
 
-// Connecting spinner — Claude Code bouncing frames (first 3 for simple effect)
+// Connecting spinner — Claude Code bouncing frames
 const CONNECT_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽'];
 
 type Overlay = null | 'model';
@@ -46,10 +46,19 @@ export function App() {
   const [iteration, setIteration] = useState(0);
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [connFrame, setConnFrame] = useState(0);
+  // Transient notification — auto-dismiss after 3s (doc 20 §3.3)
+  const [notification, setNotification] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const spinnerVerbRef = useRef<string | undefined>(undefined);
 
   const { executeCommand } = useCommands(model, setModel);
+
+  // Notification auto-dismiss (3 seconds, per Claude Code doc 20 §3.3)
+  useEffect(() => {
+    if (!notification) return;
+    const t = setTimeout(() => setNotification(null), 3000);
+    return () => clearTimeout(t);
+  }, [notification]);
 
   // Connecting animation
   useEffect(() => {
@@ -83,13 +92,19 @@ export function App() {
     })();
   }, []);
 
-  // Slash command handler
+  // Slash command handler — model/setting changes are SILENT (no chat message)
   const handleCommand = useCallback(async (raw: string) => {
     const result = await executeCommand(raw);
     if (result.type === 'clear') { setMessages([]); return; }
     if (result.type === 'exit') { exit(); return; }
     if (result.type === 'overlay') { setOverlay(result.overlay); return; }
-    if (result.type === 'setModel') { setModel(result.model); }
+    if (result.type === 'setModel') {
+      // Silent switch — status bar reflects it, no chat pollution
+      setModel(result.model);
+      setNotification(`Model set to ${result.model}`);
+      return;
+    }
+    // For text-output commands (stats, skills, sessions, help), show as system message
     setMessages(prev => [...prev, {
       id: uid(), role: 'system', timestamp: Date.now(), content: result.content,
     }]);
@@ -213,7 +228,7 @@ export function App() {
     );
   }
 
-  // Connecting state — Claude Code bouncing frames, no ink-spinner
+  // Connecting state
   if (phase === 'connecting') {
     return (
       <Box flexDirection="column" padding={1}>
@@ -239,12 +254,10 @@ export function App() {
         <ModelPicker
           currentModel={model}
           onSelect={(m) => {
+            // Silent switch — status bar shows it, transient notification confirms
             setModel(m);
             setOverlay(null);
-            setMessages(prev => [...prev, {
-              id: uid(), role: 'system', timestamp: Date.now(),
-              content: `已切换到模型: ${m}`,
-            }]);
+            setNotification(`Model set to ${m}`);
           }}
           onCancel={() => setOverlay(null)}
         />
@@ -265,6 +278,11 @@ export function App() {
         phase={phase}
         iteration={iteration}
       />
+
+      {/* Transient notification — auto-dismiss 3s (doc 20 §3.3) */}
+      {notification && (
+        <Text color={theme.inactive}>{notification}</Text>
+      )}
     </Box>
   );
 }
