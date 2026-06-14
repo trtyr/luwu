@@ -1,6 +1,6 @@
 // Select.tsx — reusable interactive selection list
-// Inspired by Claude Code's CustomSelect: ↑↓ navigate, Enter select, Esc cancel
-// ▸ marks focused item, visible window scrolls for long lists
+// Claude Code CustomSelect pattern: ↑↓ navigate, Enter select, Esc cancel
+// ❯ marks focused item (used inside Modal Pane only, NOT in SuggestionList)
 import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { theme } from '../theme.js';
@@ -50,9 +50,9 @@ export function Select({ options, defaultValue, onSelect, onCancel, visibleCount
         const realIndex = visibleStart + i;
         const isFocused = realIndex === focusedIndex;
         return (
-          <Box key={opt.value}>
+          <Box key={`${opt.value}-${realIndex}`}>
             <Text color={isFocused ? theme.text : theme.subtle}>{isFocused ? '❯ ' : '  '}</Text>
-            <Text dimColor={!isFocused} color={isFocused ? theme.text : undefined} bold={isFocused}>
+            <Text color={isFocused ? theme.text : theme.inactive} bold={isFocused}>
               {opt.label}
             </Text>
             {opt.description && (

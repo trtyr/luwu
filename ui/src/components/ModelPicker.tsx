@@ -1,5 +1,5 @@
 // ModelPicker.tsx — interactive model selection overlay
-// Claude Code pattern: /model pops up a Select list, not a text command
+// Claude Code /model: local-jsx command → Modal Pane with CustomSelect
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
@@ -19,7 +19,16 @@ export function ModelPicker({ currentModel, onSelect, onCancel }: ModelPickerPro
 
   useEffect(() => {
     getModels()
-      .then(m => setModels(m))
+      .then(m => {
+        // Deduplicate by id — server may return same model from multiple providers
+        const seen = new Set<string>();
+        const unique = m.filter(model => {
+          if (seen.has(model.id)) return false;
+          seen.add(model.id);
+          return true;
+        });
+        setModels(unique);
+      })
       .catch(() => setError('无法获取模型列表'));
   }, []);
 
@@ -59,7 +68,7 @@ export function ModelPicker({ currentModel, onSelect, onCancel }: ModelPickerPro
     <Box flexDirection="column" marginTop={1}>
       <Box marginBottom={1} flexDirection="column">
         <Text color={theme.claude} bold>Select model</Text>
-        <Text dimColor>↑↓ 选择 · Enter 确认 · Esc 取消</Text>
+        <Text color={theme.inactive}>↑↓ 选择 · Enter 确认 · Esc 取消</Text>
       </Box>
       <Select
         options={options}
