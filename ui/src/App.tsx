@@ -106,6 +106,7 @@ export function App() {
 
       <StatusLine
         model={chat.model}
+        sessionId={chat.sessionId}
         cwd={process.cwd()}
         gitBranch={chat.gitBranch}
         contextPercent={chat.contextPct}

@@ -9,6 +9,7 @@
 //   Structural blocks (code/list/blockquote/heading) get their own Box with marginTop.
 // - LIST ITEMS: marked v18 nests block-level wrappers (paragraph) inside list_item.tokens.
 //   We must flatten to extract inline tokens (strong/em/codespan/text) for rendering.
+// - TABLE: rendered from token.header + token.rows (token.text is empty in marked!)
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
@@ -135,6 +136,52 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
         </Box>
       );
     }
+    case 'table': {
+      // marked table token: header=[...], rows=[[...], ...], align=[...]
+      // token.text is EMPTY — must build from header + rows
+      const header: string[] = token.header || [];
+      const rows: string[][] = token.rows || [];
+      if (header.length === 0 && rows.length === 0) return null;
+
+      // Render as aligned text columns (no fancy box-drawing — keep it simple for TUI)
+      const colCount = header.length || (rows[0]?.length ?? 0);
+      if (colCount === 0) return null;
+
+      // Calculate column widths
+      const widths: number[] = new Array(colCount).fill(0);
+      const headerTexts = header.map((h: AnyToken) => typeof h === 'string' ? h : (h.text || ''));
+      headerTexts.forEach((t: string, i: number) => { if (i < colCount) widths[i] = Math.max(widths[i], t.length); });
+      rows.forEach((row: AnyToken[]) => {
+        row.forEach((cell: AnyToken, i: number) => {
+          const text = typeof cell === 'string' ? cell : (cell?.text || '');
+          if (i < colCount) widths[i] = Math.max(widths[i], text.length);
+        });
+      });
+
+      const pad = (s: string, i: number) => s.padEnd(widths[i]);
+
+      return (
+        <Box flexDirection="column">
+          {/* Header row */}
+          <Text bold color={tc}>
+            {headerTexts.map((t: string, i: number) => pad(t, i)).join('  ')}
+          </Text>
+          {/* Separator */}
+          <Text color={theme.inactive}>
+            {widths.map((w: number) => '─'.repeat(w)).join('──')}
+          </Text>
+          {/* Data rows */}
+          {rows.map((row: AnyToken[], ri: number) => (
+            <Text key={ri} color={tc}>
+              {row.map((cell: AnyToken, ci: number) => {
+                const text = typeof cell === 'string' ? cell : (cell?.text || '');
+                return pad(text, ci);
+              }).join('  ')}
+            </Text>
+          ))}
+        </Box>
+      );
+    }
     case 'blockquote':
       return (
         <Box flexDirection="column">
@@ -150,8 +197,6 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
       return <Text color={theme.inactive}>{'─'.repeat(40)}</Text>;
     case 'html':
       return <Text color={theme.inactive}>{token.text}</Text>;
-    case 'table':
-      return <Text color={tc}>{token.text || ''}</Text>;
     default:
       return <Text color={tc}>{token.text || ''}</Text>;
   }

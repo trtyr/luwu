@@ -7,6 +7,7 @@ import { theme } from '../theme.js';
 
 interface StatusLineProps {
   model: string;
+  sessionId: string | null;
   cwd: string;
   gitBranch: string | null;
   contextPercent: number;
@@ -14,7 +15,7 @@ interface StatusLineProps {
   iteration?: number;
 }
 
-export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, iteration }: StatusLineProps) {
+export function StatusLine({ model, sessionId, cwd, gitBranch, contextPercent, phase, iteration }: StatusLineProps) {
   const ctxColor =
     contextPercent < 50 ? theme.success :
     contextPercent < 80 ? theme.warning :
@@ -26,7 +27,7 @@ export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, itera
 
   return (
     <Box flexDirection="column">
-      {/* Main line: ❯ model · cwd · git · context% */}
+      {/* Main line: ❯ model · cwd · git · context% · sess id */}
       <Box>
         <Text color={theme.permission}>{'❯ '}</Text>
         <Text color={theme.inactive}>{model}</Text>
@@ -43,6 +44,12 @@ export function StatusLine({ model, cwd, gitBranch, contextPercent, phase, itera
         )}
         <Text color={theme.subtle}> · </Text>
         <Text color={ctxColor}>{contextPercent}%</Text>
+        {sessionId && (
+          <>
+            <Text color={theme.subtle}> · </Text>
+            <Text color={theme.inactive}>sess {sessionId.slice(0, 8)}</Text>
+          </>
+        )}
       </Box>
       {/* Hint line */}
       <Box>
