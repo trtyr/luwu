@@ -1,6 +1,6 @@
 // Markdown renderer for Ink TUI
 // Based on Claude Code's formatToken (markdown.ts):
-// - code: plain text (no fence, no color)
+// - code: syntax-highlighted via cli-highlight (was plain text)
 // - blockquote: ▎ prefix + italic + PARSED inline tokens (not raw text)
 // - codespan: permission color
 // - strikethrough: DISABLED
@@ -15,6 +15,7 @@ import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
 import { theme } from '../theme.js';
+import { highlightToNodes } from '../core/highlight.js';
 
 const MD_SYNTAX_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
 
@@ -154,7 +155,7 @@ function TokenRenderer({ token, tc, cc, dimColor }: { token: AnyToken; tc: strin
       );
     }
     case 'code':
-      return <Text color={tc}>{token.text}</Text>;
+      return <Text>{highlightToNodes(token.text, token.lang)}</Text>;
     case 'list': {
       const items = token.items || [];
       return (

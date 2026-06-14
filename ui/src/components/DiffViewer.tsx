@@ -1,11 +1,12 @@
 // components/DiffViewer.tsx — Claude Code StructuredDiffFallback simplified
 // Source: docs/11-diff-viewer-ui.md §3
 // Line-level diff: green bg for added, red bg for removed, dim for unchanged
-// Word-level diff deferred — Claude Code uses Rust NAPI for that (too slow in JS)
+// Syntax highlighting via cli-highlight when file language is detected
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
 import { diffLines } from 'diff';
+import { highlightToNodes, detectLang } from '../core/highlight.js';
 
 interface DiffViewerProps {
   oldText: string;
@@ -39,12 +40,10 @@ function buildDiffLines(oldText: string, newText: string): DiffLineObj[] {
 const CONTEXT_LINES = 3;
 
 function trimContext(lines: DiffLineObj[]): DiffLineObj[] {
-  // Find indices of all changed lines
   const changedIdx = new Set<number>();
   lines.forEach((l, i) => { if (l.type !== 'nochange') changedIdx.add(i); });
   if (changedIdx.size === 0) return lines.slice(0, 20);
 
-  // Mark lines within CONTEXT_LINES of any change as visible
   const visible = new Set<number>();
   for (const idx of changedIdx) {
     for (let d = -CONTEXT_LINES; d <= CONTEXT_LINES; d++) {
@@ -60,7 +59,6 @@ function trimContext(lines: DiffLineObj[]): DiffLineObj[] {
       result.push(lines[i]);
       prevVisible = true;
     } else if (prevVisible) {
-      // Insert ... separator once when transitioning out of visible range
       result.push({ code: '...', type: 'nochange' });
       prevVisible = false;
     }
@@ -69,6 +67,7 @@ function trimContext(lines: DiffLineObj[]): DiffLineObj[] {
 }
 
 export function DiffViewer({ oldText, newText, filePath }: DiffViewerProps) {
+  const lang = detectLang(filePath);
   const lines = buildDiffLines(oldText, newText);
   const trimmed = trimContext(lines);
 
@@ -95,6 +94,12 @@ export function DiffViewer({ oldText, newText, filePath }: DiffViewerProps) {
         else if (line.type === 'remove') lineNum = (oldLn++).toString();
         else { lineNum = `${oldLn++}`; newLn++; }
 
+        // Syntax-highlighted code nodes (foreground colors from cli-highlight)
+        // Background color from diff (green/red) applied via parent Text
+        const highlighted = lang
+          ? highlightToNodes(line.code, lang)
+          : line.code;
+
         return (
           <Box key={i} flexDirection="row">
             <Text backgroundColor={bg || undefined}>
@@ -103,9 +108,9 @@ export function DiffViewer({ oldText, newText, filePath }: DiffViewerProps) {
               </Text>
               <Text
                 backgroundColor={bg || undefined}
-                color={line.type === 'nochange' ? theme.inactive : theme.text}
+                color={line.type === 'nochange' ? theme.inactive : undefined}
               >
-                {line.code}
+                {highlighted}
               </Text>
             </Text>
           </Box>
