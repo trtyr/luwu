@@ -22,6 +22,7 @@ export function App() {
 
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [notification, setNotification] = useState<string | null>(null);
+  const [inputValue, setInputValue] = useState('');
 
   // Notification auto-dismiss (3s, doc 20 §3.3)
   React.useEffect(() => {
@@ -46,18 +47,21 @@ export function App() {
     }]);
   }, [executeCommand, exit, chat]);
 
-  // Global keyboard: Esc=interrupt, Ctrl+C=interrupt-or-exit
+  // Global keyboard: Esc=interrupt, Ctrl+C=context-aware
   useInput((input, key) => {
     if (overlay) {
       if (key.ctrl && input === 'c') exit();
       return;
     }
+    // Esc interrupts streaming
     if (key.escape && chat.abortRef.current) {
       chat.cancel();
       return;
     }
+    // Ctrl+C: streaming → cancel | has text → clear | empty → exit
     if (key.ctrl && input === 'c') {
       if (chat.abortRef.current) { chat.cancel(); return; }
+      if (inputValue.length > 0) { setInputValue(''); return; }
       exit();
     }
   });
@@ -97,6 +101,8 @@ export function App() {
         />
       ) : (
         <PromptInput
+          value={inputValue}
+          onValueChange={setInputValue}
           onSubmit={chat.sendMessage}
           onCommand={handleCommand}
           disabled={isBusy(chat.phase)}

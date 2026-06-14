@@ -3,7 +3,7 @@
 // Border: round, top+bottom only (no left/right), always promptBorder
 // Pointer: ❯ figures.pointer in subtle color (not permission blue)
 // Cursor: inverse video block ▎ in claude orange
-import React, { useState, useCallback } from 'react';
+import React, { useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { theme } from '../theme.js';
 import { useHistory } from '../hooks/useHistory.js';
@@ -11,16 +11,19 @@ import { useSuggestion } from '../hooks/useSuggestion.js';
 import { SuggestionList } from './SuggestionList.js';
 
 interface PromptInputProps {
+  value: string;
+  onValueChange: (v: string) => void;
   onSubmit: (text: string) => void;
   onCommand: (cmd: string) => void;
   disabled: boolean;
   phase: string;
 }
 
-export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInputProps) {
-  const [value, setValue] = useState('');
+export function PromptInput({ value, onValueChange, onSubmit, onCommand, disabled, phase }: PromptInputProps) {
   const history = useHistory();
   const { suggestions, selectedIndex, selectUp, selectDown, isVisible, selectedSuggestion } = useSuggestion(value);
+
+  const setValue = onValueChange;
 
   const completeSuggestion = useCallback(() => {
     if (selectedSuggestion) {
@@ -28,7 +31,7 @@ export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInpu
       return true;
     }
     return false;
-  }, [selectedSuggestion]);
+  }, [selectedSuggestion, setValue]);
 
   useInput(useCallback((input: string, key: any) => {
     if (disabled) return;
@@ -68,7 +71,7 @@ export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInpu
 
     // Backspace
     if (key.backspace || key.delete) {
-      setValue(v => [...v].slice(0, -1).join(''));
+      setValue([...value].slice(0, -1).join(''));
       return;
     }
 
@@ -81,9 +84,9 @@ export function PromptInput({ onSubmit, onCommand, disabled, phase }: PromptInpu
         const code = ch.codePointAt(0)!;
         return code >= 0x20 || ch === ' ';
       });
-      if (ok) setValue(v => v + input);
+      if (ok) setValue(value + input);
     }
-  }, [disabled, value, isVisible, selectedSuggestion, history, selectUp, selectDown, completeSuggestion, onSubmit, onCommand]));
+  }, [disabled, value, isVisible, selectedSuggestion, history, selectUp, selectDown, completeSuggestion, setValue, onSubmit, onCommand]));
 
   const placeholder = disabled
     ? (phase === 'thinking' ? 'thinking…' : 'busy…')
