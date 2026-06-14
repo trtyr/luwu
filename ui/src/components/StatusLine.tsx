@@ -1,5 +1,5 @@
 // StatusLine — segment-based status bar with working indicator
-// Segments: [working/waiting spinner] · model · runtime · cwd · git · [bar] ctx% · iter · sess
+// Segments: [●/⏺ conn] · [working/waiting spinner] · model · runtime · cwd · git · [bar] ctx% · iter · sess
 // Braille spinner: ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ (rotating dots animation)
 // Stalled detection: if no SSE activity for >15s during thinking/streaming → "waiting"
 import React, { useState, useEffect, useRef } from 'react';
@@ -16,6 +16,7 @@ interface StatusLineProps {
   phase: string;
   iteration?: number;
   lastActivityRef?: React.MutableRefObject<number>;
+  connected?: boolean;
 }
 
 // Braille spinner frames — looks like rotating pixels
@@ -75,7 +76,7 @@ const SESSION_START = Date.now();
 
 export function StatusLine({
   model, sessionId, cwd, gitBranch, contextPercent, contextTokens, phase, iteration,
-  lastActivityRef,
+  lastActivityRef, connected = true,
 }: StatusLineProps) {
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [spinnerIdx, setSpinnerIdx] = useState(0);
@@ -129,7 +130,9 @@ export function StatusLine({
   const filled = Math.round((contextPercent / 100) * barWidth);
   const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
 
-  const hint = isWorking
+  const hint = !connected
+    ? '⚠ backend disconnected'
+    : isWorking
     ? 'esc to interrupt'
     : '? for shortcuts · ↑↓ history · / commands';
 
@@ -150,6 +153,13 @@ export function StatusLine({
   return (
     <Box flexDirection="column">
       <Box>
+        {/* Connection indicator */}
+        <Text color={connected ? theme.success : theme.error}>
+          {connected ? '●' : '⏺'}
+        </Text>
+
+        {sep}
+
         {/* Working indicator — braille spinner + status text */}
         {isWorking ? (
           stallSec > 0 ? (
@@ -207,7 +217,7 @@ export function StatusLine({
       </Box>
 
       <Box>
-        <Text color={theme.inactive}>{hint}</Text>
+        <Text color={!connected ? theme.error : theme.inactive}>{hint}</Text>
       </Box>
     </Box>
   );

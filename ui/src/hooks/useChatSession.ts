@@ -30,6 +30,7 @@ export interface ChatSession {
   contextTokens: number;
   iteration: number;
   spinnerVerb: string | undefined;
+  connected: boolean;
   lastActivityRef: React.MutableRefObject<number>;
   setMessages: React.Dispatch<React.SetStateAction<DisplayMessage[]>>;
   setModel: (m: string) => void;
@@ -51,6 +52,7 @@ export function useChatSession(): ChatSession {
   const [contextTokens, setContextTokens] = useState(0);
   const [iteration, setIteration] = useState(0);
   const [spinnerVerb, setSpinnerVerb] = useState<string | undefined>(undefined);
+  const [connected, setConnected] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
   const lastActivityRef = useRef(Date.now());
 
@@ -87,7 +89,9 @@ export function useChatSession(): ChatSession {
   // ── Heartbeat: ping every 10s so daemon knows we're alive ──
   useEffect(() => {
     const timer = setInterval(() => {
-      checkHealth().catch(() => {});
+      checkHealth()
+        .then(() => setConnected(true))
+        .catch(() => setConnected(false));
     }, 10_000);
     return () => clearInterval(timer);
   }, []);
@@ -314,7 +318,7 @@ export function useChatSession(): ChatSession {
 
   return {
     messages, phase, sessionId, error, model, gitBranch,
-    contextPct, contextTokens, iteration, spinnerVerb,
+    contextPct, contextTokens, iteration, spinnerVerb, connected,
     lastActivityRef,
     setMessages, setModel, sendMessage, cancel, restoreSession, newSession, abortRef,
   };

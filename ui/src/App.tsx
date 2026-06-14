@@ -194,6 +194,7 @@ export function App() {
         phase={chat.phase}
         iteration={chat.iteration}
         lastActivityRef={chat.lastActivityRef}
+        connected={chat.connected}
       />
 
       {notification && (
