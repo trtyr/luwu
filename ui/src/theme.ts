@@ -9,11 +9,11 @@ export const theme = {
   claudeShimmer: '#F09575',      // rgb(240,149,117)
 
   // Text
-  text: '#E0E0E0',              // default text
+  text: '#FFFFFF',              // rgb(255,255,255) — pure white
   inverseText: '#000000',
-  inactive: '#888888',          // dimmed
+  inactive: '#A0A0A0',          // rgb(160,160,160) — dimmed
   inactiveShimmer: '#AAAAAA',
-  subtle: '#666666',            // very dim
+  subtle: '#828282',            // rgb(130,130,130) — very dim
 
   // Semantic
   success: '#4EBA65',           // rgb(78,186,101)
@@ -23,7 +23,7 @@ export const theme = {
   permission: '#5769F7',
 
   // Borders
-  promptBorder: '#555555',
+  promptBorder: '#666666',      // rgb(102,102,102)
   promptBorderShimmer: '#777777',
   bashBorder: '#FF6B80',
 
