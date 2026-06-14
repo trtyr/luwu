@@ -1,6 +1,5 @@
-// AssistantMessage — ● dot + content INLINE (not wrapped in MessageResponse!)
-// Claude Code layout: [●] [content flows directly to the right of dot]
-// MessageResponse (⎿ indent) is ONLY for tool results, NOT main text
+// AssistantMessage — Claude Code AssistantTextMessage.tsx L228-266 layout:
+// [dot minWidth=2] [Markdown content column] inside flexDirection=row, width=100%
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
@@ -12,21 +11,22 @@ import type { DisplayMessage } from '../core/types.js';
 
 export function AssistantMessage({ msg, addMargin }: { msg: DisplayMessage; addMargin: boolean }) {
   return (
-    <Box flexDirection="column" marginTop={addMargin ? 1 : 0}>
-      {msg.reasoning && (
-        <ReasoningBlock reasoning={msg.reasoning} />
-      )}
+    <Box flexDirection="column" marginTop={addMargin ? 1 : 0} width="100%">
+      {msg.reasoning && <ReasoningBlock reasoning={msg.reasoning} />}
       {msg.content && (
-        <Box flexDirection="row" marginTop={msg.reasoning ? 0 : 0}>
-          {/* ● dot: minWidth=2, text white */}
-          <Text color={theme.text}>{LAYOUT.ASSISTANT_DOT} </Text>
-          {/* Content flows directly right of dot, NO MessageResponse wrapper */}
-          <Box flexDirection="column" flexShrink={1} flexGrow={1}>
-            <Markdown>{msg.content}</Markdown>
+        <Box alignItems="flex-start" flexDirection="row" width="100%">
+          <Box flexDirection="row">
+            {/* ● dot: minWidth=2, color=text (white) */}
+            <Box minWidth={LAYOUT.DOT_MIN_WIDTH}>
+              <Text color={theme.text}>{LAYOUT.ASSISTANT_DOT}</Text>
+            </Box>
+            {/* Content flows right of dot */}
+            <Box flexDirection="column" flexShrink={1} flexGrow={1}>
+              <Markdown>{msg.content}</Markdown>
+            </Box>
           </Box>
         </Box>
       )}
-      {/* Tool results DO use MessageResponse (⎿ indent) */}
       {msg.tools?.map((tool, i) => <ToolResult key={i} tool={tool} />)}
     </Box>
   );
