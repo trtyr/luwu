@@ -70,7 +70,7 @@ export function summarizeToolResult(name: string, result: string | undefined): s
   }
 
   // ── Grep / ffgrep ──
-  if (lower === 'grep' || lower === 'ffgrep' || lower === 'memory_search') {
+  if (lower === 'grep' || lower === 'ffgrep' || lower === 'memory' || lower === 'memory_search') {
     // Count file-like lines (contain : or look like file paths)
     const lines = trimmed.split('\n');
     const fileCount = lines.filter(l =>
@@ -137,7 +137,9 @@ export function toolDisplayName(name: string): string {
   const map: Record<string, string> = {
     'fffind': 'Glob',
     'ffgrep': 'Grep',
-    'memory_search': 'MemorySearch',
+    'memory': 'Memory',
+    'memory_search': 'Memory',
+    'todo': 'Todo',
     'web_fetch': 'WebFetch',
     'webfetch': 'WebFetch',
   };
