@@ -72,7 +72,8 @@ impl DeterministicSummary {
             for b in self.blockers.iter().take(10) {
                 // Truncate long blockers
                 let truncated = if b.len() > 200 {
-                    format!("{}...", &b[..200])
+                    let end = b.floor_char_boundary(200);
+                    format!("{}...", &b[..end])
                 } else {
                     b.clone()
                 };
@@ -86,7 +87,8 @@ impl DeterministicSummary {
             out.push_str("[Transcript Tail]\n");
             for (role, text) in &self.transcript_tail {
                 let preview = if text.len() > 500 {
-                    format!("{}...", &text[..500])
+                    let end = text.floor_char_boundary(500);
+                    format!("{}...", &text[..end])
                 } else {
                     text.clone()
                 };

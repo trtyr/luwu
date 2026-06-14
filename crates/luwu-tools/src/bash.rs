@@ -148,7 +148,8 @@ impl Tool for BashTool {
         // Truncate with helpful guidance.
         if result.len() > MAX_OUTPUT {
             let original_lines = result.lines().count();
-            result.truncate(MAX_OUTPUT);
+            let end = result.floor_char_boundary(MAX_OUTPUT);
+            result.truncate(end);
             // Don't cut in the middle of a line.
             if let Some(pos) = result.rfind('\n') {
                 result.truncate(pos);

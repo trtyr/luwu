@@ -181,7 +181,8 @@ async fn read_file(
 
     if result.len() > MAX_READ_SIZE {
         let shown_count = result_lines.len();
-        result.truncate(MAX_READ_SIZE);
+        let end = result.floor_char_boundary(MAX_READ_SIZE);
+        result.truncate(end);
         if let Some(pos) = result.rfind('\n') {
             result.truncate(pos);
         }

@@ -74,7 +74,8 @@ pub(crate) fn messages_to_transcript(messages: &[Message], max_chars: usize) -> 
                 }
             }
             if out.len() > max_chars {
-                out.truncate(max_chars);
+                let end = out.floor_char_boundary(max_chars);
+                out.truncate(end);
                 out.push_str("...[truncated]");
                 return out;
             }

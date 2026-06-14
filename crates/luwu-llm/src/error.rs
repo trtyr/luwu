@@ -46,7 +46,8 @@ pub fn truncate_body(body: &str, max: usize) -> String {
     if body.len() <= max {
         body.to_string()
     } else {
-        format!("{}…", &body[..max])
+        let end = body.floor_char_boundary(max);
+        format!("{}…", &body[..end])
     }
 }
 #[cfg(test)]
