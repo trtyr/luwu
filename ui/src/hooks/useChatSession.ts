@@ -1,4 +1,12 @@
 // hooks/useChatSession.ts — chat state + SSE stream processing
+//
+// ARCHITECTURE: Two-tier message state for flicker-free rendering.
+//   committedMessages → <Static> (written to terminal once, enters scrollback)
+//   streamingMessage  → dynamic area (re-rendered every frame, always small)
+//
+// When a turn completes, streamingMessage moves to committedMessages.
+// This keeps the dynamic area small (1 message + input + status), preventing
+// Ink's eraseLines cursor-up from ever reaching the terminal top.
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
   DisplayMessage, ToolCallInfo, AssistantBlock, Phase, StreamEvent,
@@ -20,7 +28,9 @@ function getGitBranchSync(): string | null {
 }
 
 export interface ChatSession {
-  messages: DisplayMessage[];
+  committedMessages: DisplayMessage[];
+  streamingMessage: DisplayMessage | null;
+  staticKey: number;
   phase: Phase;
   sessionId: string | null;
   error: string | null;
@@ -32,17 +42,23 @@ export interface ChatSession {
   spinnerVerb: string | undefined;
   connected: boolean;
   lastActivityRef: React.MutableRefObject<number>;
-  setMessages: React.Dispatch<React.SetStateAction<DisplayMessage[]>>;
   setModel: (m: string) => void;
   sendMessage: (text: string) => Promise<void>;
   cancel: () => void;
   restoreSession: (id: string) => void;
   newSession: () => Promise<void>;
+  clearMessages: () => void;
   abortRef: React.MutableRefObject<AbortController | null>;
 }
 
+function sysMsg(text: string): DisplayMessage {
+  return { id: uid(), role: 'system', content: text, timestamp: Date.now() };
+}
+
 export function useChatSession(): ChatSession {
-  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [committedMessages, setCommittedMessages] = useState<DisplayMessage[]>([]);
+  const [streamingMessage, setStreamingMessage] = useState<DisplayMessage | null>(null);
+  const [staticKey, setStaticKey] = useState(0);
   const [phase, setPhase] = useState<Phase>('connecting');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +71,7 @@ export function useChatSession(): ChatSession {
   const [connected, setConnected] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
   const lastActivityRef = useRef(Date.now());
+  const streamingRef = useRef<DisplayMessage | null>(null);
 
   const updateContext = useCallback((promptTokens: number, currentModel: string) => {
     const max = contextWindowFor(currentModel);
@@ -75,10 +92,9 @@ export function useChatSession(): ChatSession {
           if (models.length > 0 && models[0].id) setModel(models[0].id);
         } catch { /* default */ }
         setPhase('ready');
-        setMessages([{
-          id: uid(), role: 'system', timestamp: Date.now(),
-          content: '陆吾 v0.1.0 — 输入消息开始对话 · ↑↓ 浏览历史 · / 查看命令',
-        }]);
+        setCommittedMessages([sysMsg(
+          '陆吾 v0.1.0 — 输入消息开始对话 · ↑↓ 浏览历史 · / 查看命令'
+        )]);
       } catch (e) {
         setError(String(e));
         setPhase('error');
@@ -103,18 +119,30 @@ export function useChatSession(): ChatSession {
     }
   }, [sessionId]);
 
+  const clearMessages = useCallback(() => {
+    // Clear visible screen + reset Ink's static tracking
+    process.stdout.write('\x1B[2J\x1B[H');
+    streamingRef.current = null;
+    setStreamingMessage(null);
+    setCommittedMessages([]);
+    setStaticKey(k => k + 1);
+  }, []);
+
   const restoreSession = useCallback((id: string) => {
     if (abortRef.current) {
       abortRef.current.abort();
       if (sessionId) cancelTurn(sessionId).catch(() => {});
     }
+    process.stdout.write('\x1B[2J\x1B[H');
     setSessionId(id);
     setContextPct(0); setContextTokens(0); setIteration(0); setSpinnerVerb(undefined);
     setPhase('ready');
-    setMessages([{
-      id: uid(), role: 'system', timestamp: Date.now(),
-      content: `已切换到 session ${id.slice(0, 8)}… · 服务器端保留完整对话历史`,
-    }]);
+    streamingRef.current = null;
+    setStreamingMessage(null);
+    setCommittedMessages([sysMsg(
+      `已切换到 session ${id.slice(0, 8)}… · 服务器端保留完整对话历史`
+    )]);
+    setStaticKey(k => k + 1);
   }, [sessionId]);
 
   const newSession = useCallback(async () => {
@@ -124,18 +152,16 @@ export function useChatSession(): ChatSession {
     }
     setContextPct(0); setContextTokens(0); setIteration(0); setSpinnerVerb(undefined);
     setPhase('connecting');
-    setMessages([{
-      id: uid(), role: 'system', timestamp: Date.now(),
-      content: '正在创建新会话…',
-    }]);
+    streamingRef.current = null;
+    setStreamingMessage(null);
+    setCommittedMessages([sysMsg('正在创建新会话…')]);
+    setStaticKey(k => k + 1);
     try {
       const newId = await createSession();
       setSessionId(newId);
       setPhase('ready');
-      setMessages([{
-        id: uid(), role: 'system', timestamp: Date.now(),
-        content: `新会话 ${newId.slice(0, 8)}… 已创建 · 开始对话吧`,
-      }]);
+      setCommittedMessages([sysMsg(`新会话 ${newId.slice(0, 8)}… 已创建 · 开始对话吧`)]);
+      setStaticKey(k => k + 1);
     } catch (e) {
       setPhase('error');
       setError(`创建新会话失败: ${String(e)}`);
@@ -145,13 +171,19 @@ export function useChatSession(): ChatSession {
   const sendMessage = useCallback(async (text: string) => {
     if (!sessionId || !text.trim()) return;
 
+    // Commit user message immediately to <Static>
     const userMsg: DisplayMessage = {
       id: uid(), role: 'user', content: text.trim(), timestamp: Date.now(),
     };
+    setCommittedMessages(prev => [...prev, userMsg]);
+
+    // Start streaming assistant message in dynamic area
     const assistantId = uid();
-    setMessages(prev => [...prev, userMsg, {
+    const assistantMsg: DisplayMessage = {
       id: assistantId, role: 'assistant', content: '', blocks: [], timestamp: Date.now(),
-    }]);
+    };
+    streamingRef.current = assistantMsg;
+    setStreamingMessage(assistantMsg);
 
     setPhase('thinking');
     setIteration(0);
@@ -182,18 +214,23 @@ export function useChatSession(): ChatSession {
       }
     };
 
-    // Core state mutation — updates both blocks and reasoning in one shot
+    // Update streamingRef + streamingMessage atomically
     const syncToReact = () => {
       const textContent = blocks
         .filter(b => b.type === 'text')
         .map(b => (b as { type: 'text'; text: string }).text)
         .join('\n\n');
       const reasoning = accReasoning;
-      setMessages(prev => prev.map(m =>
-        m.id === assistantId
-          ? { ...m, blocks: blocks.map(b => ({ ...b })), content: textContent, reasoning }
-          : m
-      ));
+      if (streamingRef.current) {
+        const updated: DisplayMessage = {
+          ...streamingRef.current,
+          blocks: blocks.map(b => ({ ...b })),
+          content: textContent,
+          reasoning: reasoning || undefined,
+        };
+        streamingRef.current = updated;
+        setStreamingMessage(updated);
+      }
     };
 
     const throttledSync = () => {
@@ -211,7 +248,6 @@ export function useChatSession(): ChatSession {
       }
     };
 
-    // Force immediate sync (for tool events, done, cancel, error)
     const immediateSync = () => {
       if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
       lastSyncTime = Date.now();
@@ -311,15 +347,24 @@ export function useChatSession(): ChatSession {
         syncToReact();
       }
     } finally {
+      // ── Move streaming message to committed (<Static>) ──
+      const final = streamingRef.current;
+      if (final && (final.content.trim() || (final.blocks && final.blocks.length > 0))) {
+        setCommittedMessages(prev => [...prev, final]);
+      }
+      streamingRef.current = null;
+      setStreamingMessage(null);
+
       abortRef.current = null;
       setPhase('ready');
     }
   }, [sessionId, model, updateContext]);
 
   return {
-    messages, phase, sessionId, error, model, gitBranch,
+    committedMessages, streamingMessage, staticKey,
+    phase, sessionId, error, model, gitBranch,
     contextPct, contextTokens, iteration, spinnerVerb, connected,
     lastActivityRef,
-    setMessages, setModel, sendMessage, cancel, restoreSession, newSession, abortRef,
+    setModel, sendMessage, cancel, restoreSession, newSession, clearMessages, abortRef,
   };
 }

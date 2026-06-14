@@ -1,14 +1,20 @@
 // App.tsx — pure composition layer
 // Wires hooks → components. No business logic, no stream processing.
-// Overlay system: all interactive commands render in overlays (doc 29)
+//
+// FLICKER-FREE RENDERING via Ink <Static>:
+//   <Static items={committedMessages}> — written to terminal ONCE, enters scrollback
+//   {streamingMessage} — dynamic area, re-rendered every frame (always small)
+// This keeps the re-render area tiny (1 message + input + status), preventing
+// Ink's eraseLines cursor-up from ever reaching the terminal top.
 import React, { useState, useCallback, useEffect } from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, Static, useApp, useInput } from 'ink';
 import { theme } from './theme.js';
-import { MessageList } from './components/MessageList.js';
+import { UserMessage } from './components/UserMessage.js';
+import { AssistantMessage } from './components/AssistantMessage.js';
+import { SystemMessage } from './components/SystemMessage.js';
 import { StatusLine } from './components/StatusLine.js';
 import { PromptInput } from './components/PromptInput.js';
 import { Spinner } from './components/Spinner.js';
-import { Welcome } from './components/Welcome.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import { HelpOverlay } from './components/HelpOverlay.js';
 import { StatsOverlay } from './components/StatsOverlay.js';
@@ -16,11 +22,18 @@ import { SkillsOverlay } from './components/SkillsOverlay.js';
 import { SessionsOverlay } from './components/SessionsOverlay.js';
 import { RewindOverlay } from './components/RewindOverlay.js';
 import { isBusy } from './core/state.js';
-import type { TaskItem } from './core/types.js';
+import type { DisplayMessage, TaskItem } from './core/types.js';
 import type { OverlayType } from './hooks/useCommands.js';
 import { useChatSession } from './hooks/useChatSession.js';
 import { useCommands } from './hooks/useCommands.js';
 import { getTasks } from './services/api.js';
+
+// ── Message row dispatcher (same logic as old MessageList) ──
+function MessageRow({ msg, addMargin }: { msg: DisplayMessage; addMargin: boolean }) {
+  if (msg.role === 'user') return <UserMessage msg={msg} addMargin={addMargin} />;
+  if (msg.role === 'assistant') return <AssistantMessage msg={msg} addMargin={addMargin} />;
+  return <SystemMessage msg={msg} addMargin={addMargin} />;
+}
 
 export function App() {
   const { exit } = useApp();
@@ -60,7 +73,7 @@ export function App() {
   // Slash command handler
   const handleCommand = useCallback(async (raw: string) => {
     const result = await executeCommand(raw);
-    if (result.type === 'clear') { chat.setMessages([]); return; }
+    if (result.type === 'clear') { chat.clearMessages(); return; }
     if (result.type === 'exit') { exit(); return; }
     if (result.type === 'newSession') { await chat.newSession(); return; }
     if (result.type === 'overlay') { setOverlay(result.overlay); return; }
@@ -162,8 +175,21 @@ export function App() {
   // ── Main composition ──
   return (
     <Box flexDirection="column">
-      <Welcome />
-      <MessageList messages={chat.messages} />
+      {/* Committed messages — written to terminal once, enter scrollback */}
+      <Static key={chat.staticKey} items={chat.committedMessages}>
+        {(msg, index) => (
+          <MessageRow key={msg.id} msg={msg} addMargin={index > 0} />
+        )}
+      </Static>
+
+      {/* Streaming message — re-rendered each frame, always small */}
+      {chat.streamingMessage && (
+        <MessageRow
+          msg={chat.streamingMessage}
+          addMargin={chat.committedMessages.length > 0}
+        />
+      )}
+
       <Spinner
         phase={chat.phase}
         verb={chat.spinnerVerb}
