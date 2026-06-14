@@ -439,3 +439,38 @@ ui/src/
 
 ### ToolResult
 - [icon] **ToolName**(params) → nested result
+
+---
+
+## Round 12-14 布局深挖修正
+
+### 核心布局 Bug 修复
+1. **AssistantMessage 双重缩进** — content 被 MessageResponse + marginLeft 包裹 = 8字符深缩进 → 修复：content 直接跟在 ● dot 右边，dot 用 minWidth=2 Box 包裹
+2. **Theme 4 色值错误** — text #E0E0E0→#FFFFFF, inactive #888888→#A0A0A0, subtle #666666→#828282, promptBorder #555555→#666666
+3. **PromptInput 边框颜色** — 始终 promptBorder 灰色，不随 phase 变橙色
+4. **streaming cursor 删除** — 文本已在消息中实时更新，不需要独立 ▎ 行
+5. **reasoning_delta 实时更新** — 之前只积累不更新消息对象
+
+### 精确布局结构 (AssistantTextMessage.tsx L228-266)
+```
+<Box flexDirection="column" marginTop={addMargin?1:0} width="100%">
+  <Box alignItems="flex-start" flexDirection="row" width="100%">
+    <Box minWidth={2}>  ← dot container
+      <Text color="text">{●}</Text>
+    </Box>
+    <Box flexDirection="column" flexShrink={1}>  ← content
+      <Markdown>{text}</Markdown>
+    </Box>
+  </Box>
+  {tools.map(ToolResult)}  ← uses MessageResponse ⎿ indent
+</Box>
+```
+
+### 其他修正
+- Welcome: ━━ 50字符分隔线, marginBottom=1
+- StatusLine: 移除 marginTop (紧贴 PromptInput)
+- 光标字符: ▏→▎ (BLOCKQUOTE_BAR U+258E)
+- PromptInput 前缀: suggestion→subtle
+- SystemMessage: 纯 dimColor, 无前缀
+- Spinner completion: minWidth=2 (与 ● dot 对齐)
+- UserMessage: paddingLeft=1 (文本不贴背景左边缘)
