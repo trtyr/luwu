@@ -11,6 +11,7 @@ export function UserMessage({ msg, addMargin }: { msg: DisplayMessage; addMargin
     flexDirection: 'column' as const,
     marginTop: addMargin ? 1 : 0,
     paddingRight: 1,
+    paddingLeft: 1,
   };
   boxProps.backgroundColor = theme.userMessageBackground;
 
