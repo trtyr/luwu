@@ -116,6 +116,19 @@ pub fn router(state: AppState) -> Router {
             "/v1/sessions/{id}/tasks",
             axum::routing::get(handlers::list_tasks),
         )
+        // Rewind endpoints.
+        .route(
+            "/v1/sessions/{id}/rewind/messages",
+            axum::routing::get(handlers::list_rewind_messages),
+        )
+        .route(
+            "/v1/sessions/{id}/rewind",
+            axum::routing::post(handlers::rewind_session),
+        )
+        .route(
+            "/v1/sessions/{id}/summarize",
+            axum::routing::post(handlers::summarize_session),
+        )
         // Skill endpoints.
         .route("/v1/stats", axum::routing::get(handlers::stats))
         .route("/v1/skills", axum::routing::get(handlers::list_skills))

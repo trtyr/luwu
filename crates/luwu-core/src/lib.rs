@@ -17,6 +17,7 @@
 
 pub mod cycle;
 pub mod engine;
+pub mod file_history;
 pub mod error;
 pub mod event;
 pub mod llm;
@@ -46,3 +47,4 @@ pub use session_manager::{
 pub use skill::{Skill, SkillFrontmatter, SkillRegistry};
 pub use tool::{Tool, ToolContext, ToolOutput};
 pub use tool_registry::ToolRegistry;
+pub use file_history::{DiffStats, FileHistory, FileHistorySnapshot, FileHistoryState};

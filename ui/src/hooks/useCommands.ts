@@ -4,7 +4,7 @@ import { useCallback } from 'react';
 import { COMMANDS } from '../core/constants.js';
 import type { CommandDef } from '../core/types.js';
 
-export type OverlayType = 'help' | 'stats' | 'skills' | 'sessions' | 'model';
+export type OverlayType = 'help' | 'stats' | 'skills' | 'sessions' | 'model' | 'rewind';
 
 export type CommandResult =
   | { type: 'clear' }

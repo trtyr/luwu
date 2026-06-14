@@ -7,14 +7,16 @@
 //! - `agent` — agent event stream with tool visibility + cycle management
 //! - `skills` — skill listing + detail
 //! - `memory_ops` — checkpoint + history search
-//! - `workers` — memory worker functions (consolidation, observer, reflector, checkpoint)
+//! - `workers` — memory worker functions (consolidation, observer, reflector)
 //! - `stats` — runtime statistics endpoint
 //! - `tasks` — todo task list endpoint
+//! - `rewind` — conversation rewind + code restore + summarize
 
 pub mod agent;
 pub mod chat;
 pub mod health;
 pub mod memory_ops;
+pub mod rewind;
 pub mod sessions;
 pub mod skills;
 pub mod stats;
@@ -26,6 +28,7 @@ pub use agent::agent_chat;
 pub use chat::chat_completions;
 pub use health::{health, list_models};
 pub use memory_ops::{get_checkpoint, search_history};
+pub use rewind::{list_rewind_messages, rewind_session, summarize_session};
 pub use sessions::{cancel_turn, create_session, delete_session, get_session, list_sessions};
 pub use skills::{get_skill_detail, list_skills};
 pub use stats::stats;

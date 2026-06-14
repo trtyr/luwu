@@ -3,6 +3,9 @@
 //! The [`ToolRegistry`] holds all tools available to the agent. It can produce
 //! [`ToolDefinition`] lists to send to the LLM, and dispatch tool calls to
 //! the right handler at execution time.
+//!
+//! File history integration: before executing write/edit tools, the registry
+//! calls `track_edit` on the optional `FileHistory` to back up the original file.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,6 +20,9 @@ use crate::tool::{Tool, ToolContext, ToolOutput};
 #[derive(Clone)]
 pub struct ToolRegistry {
     tools: Arc<HashMap<String, Box<dyn Tool>>>,
+    /// Optional file history for rewind — when set, write/edit tools are
+    /// intercepted to back up original files before modification.
+    file_history: Option<Arc<tokio::sync::Mutex<crate::file_history::FileHistory>>>,
 }
 
 impl ToolRegistry {
@@ -24,13 +30,20 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: Arc::new(HashMap::new()),
+            file_history: None,
         }
+    }
+
+    /// Attach a file history for rewind support.
+    /// Once attached, all write/edit tool calls will be intercepted to
+    /// back up the original file before execution.
+    pub fn with_file_history(mut self, fh: Arc<tokio::sync::Mutex<crate::file_history::FileHistory>>) -> Self {
+        self.file_history = Some(fh);
+        self
     }
 
     /// Register a tool. If a tool with the same name already exists, it's replaced.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
-        // We need to get a mutable reference to the inner HashMap.
-        // Since we use Arc, we need to check if it's uniquely owned.
         let tools = Arc::get_mut(&mut self.tools)
             .expect("ToolRegistry::register called after sharing (Arc is shared). Register tools before sharing the registry.");
         tools.insert(tool.name().to_string(), tool);
@@ -47,7 +60,6 @@ impl ToolRegistry {
     }
 
     /// Generate [`ToolDefinition`]s for all registered tools.
-    /// These are sent to the LLM so it knows what it can call.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .values()
@@ -60,6 +72,8 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name with the given JSON input.
+    /// If file history is attached and the tool is write/edit, the target file
+    /// is backed up BEFORE execution.
     pub async fn execute(
         &self,
         name: &str,
@@ -71,6 +85,19 @@ impl ToolRegistry {
             .tools
             .get(name)
             .ok_or_else(|| crate::error::LuwuError::Tool(format!("Unknown tool: {name}")))?;
+
+        // ── File history: back up files before write/edit ──
+        if let Some(fh) = &self.file_history {
+            if let Some(file_path) = extract_file_path(name, &input) {
+                let fh = fh.clone();
+                // Use try_lock — don't block the agent if history is being read
+                if let Ok(mut guard) = fh.try_lock() {
+                    if let Err(e) = guard.track_edit(&file_path, &session_id.0) {
+                        tracing::warn!(error = %e, file = %file_path, "File history track_edit failed");
+                    }
+                }
+            }
+        }
 
         let context = ToolContext {
             working_dir,
@@ -88,6 +115,20 @@ impl ToolRegistry {
     /// Are there any tools registered?
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+}
+
+/// Extract the file path from a tool's JSON arguments for write/edit tools.
+/// Returns None for tools that don't modify files.
+fn extract_file_path(tool_name: &str, input: &serde_json::Value) -> Option<String> {
+    match tool_name {
+        "write" | "edit" => input
+            .get("path")
+            .or_else(|| input.get("file_path"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "bash" => None, // bash is too unpredictable to track
+        _ => None,
     }
 }
 
@@ -216,8 +257,31 @@ mod tests {
         let mut reg = ToolRegistry::new();
         reg.register(make_tool("bash"));
         let cloned = reg.clone();
-        // Both see the same tools (Arc-backed).
         assert_eq!(cloned.len(), 1);
         assert!(cloned.get("bash").is_some());
+    }
+
+    #[test]
+    fn extract_file_path_write() {
+        let input = serde_json::json!({"path": "src/main.rs", "content": "fn main() {}"});
+        assert_eq!(extract_file_path("write", &input), Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn extract_file_path_edit() {
+        let input = serde_json::json!({"path": "src/lib.rs", "old_text": "a", "new_text": "b"});
+        assert_eq!(extract_file_path("edit", &input), Some("src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn extract_file_path_bash_returns_none() {
+        let input = serde_json::json!({"command": "ls"});
+        assert_eq!(extract_file_path("bash", &input), None);
+    }
+
+    #[test]
+    fn extract_file_path_file_path_key() {
+        let input = serde_json::json!({"file_path": "src/util.rs"});
+        assert_eq!(extract_file_path("write", &input), Some("src/util.rs".to_string()));
     }
 }

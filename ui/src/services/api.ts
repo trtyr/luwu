@@ -126,3 +126,62 @@ export async function getTasks(sessionId: string): Promise<TaskItem[]> {
   const data = await res.json();
   return (data.tasks || []) as TaskItem[];
 }
+
+// ── Rewind API ──
+
+export interface RewindMessageInfo {
+  index: number;
+  text: string;
+  diff_stats?: { files_changed: number; insertions: number; deletions: number };
+}
+
+export interface RewindResult {
+  restored_text: string;
+  files_changed: string[];
+  remaining_messages: number;
+}
+
+export interface SummarizeResult {
+  summary: string;
+  messages_removed: number;
+}
+
+export async function getRewindMessages(sessionId: string): Promise<RewindMessageInfo[]> {
+  const res = await fetch(`${BASE_URL}/v1/sessions/${sessionId}/rewind/messages`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.messages || [];
+}
+
+export async function rewindSession(
+  sessionId: string,
+  messageIndex: number,
+  restoreCode: boolean,
+  restoreConversation: boolean,
+): Promise<RewindResult | null> {
+  const res = await fetch(`${BASE_URL}/v1/sessions/${sessionId}/rewind`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message_index: messageIndex,
+      restore_code: restoreCode,
+      restore_conversation: restoreConversation,
+    }),
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function summarizeFrom(
+  sessionId: string,
+  messageIndex: number,
+  direction: string,
+): Promise<SummarizeResult | null> {
+  const res = await fetch(`${BASE_URL}/v1/sessions/${sessionId}/summarize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message_index: messageIndex, direction }),
+  });
+  if (!res.ok) return null;
+  return res.json();
+}

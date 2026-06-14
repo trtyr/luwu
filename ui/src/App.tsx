@@ -14,6 +14,7 @@ import { HelpOverlay } from './components/HelpOverlay.js';
 import { StatsOverlay } from './components/StatsOverlay.js';
 import { SkillsOverlay } from './components/SkillsOverlay.js';
 import { SessionsOverlay } from './components/SessionsOverlay.js';
+import { RewindOverlay } from './components/RewindOverlay.js';
 import { isBusy } from './core/state.js';
 import type { TaskItem } from './core/types.js';
 import type { OverlayType } from './hooks/useCommands.js';
@@ -139,6 +140,18 @@ export function App() {
               setNotification(`Model set to ${m}`);
             }}
             onCancel={() => setOverlay(null)}
+          />
+        );
+      case 'rewind':
+        return (
+          <RewindOverlay
+            sessionId={chat.sessionId ?? ''}
+            onClose={() => setOverlay(null)}
+            onRewind={(text, _remaining) => {
+              setOverlay(null);
+              if (text) setInputValue(text);
+              setNotification('Rewind complete · message restored to input');
+            }}
           />
         );
       default:

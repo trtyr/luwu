@@ -63,6 +63,7 @@ pub struct AgentService {
     resolved: ResolvedConfig,
     session_id: String,
     working_dir: PathBuf,
+    file_history: Arc<tokio::sync::Mutex<luwu_core::file_history::FileHistory>>,
 }
 
 impl AgentService {
@@ -85,7 +86,12 @@ impl AgentService {
             .join(".luwu");
         let memory = Arc::new(MemoryStore::new(&luwu_home, &working_dir, &session_id));
 
-        let tools = builtin_tool_registry();
+        let session_dir = luwu_home.join("sessions").join(&session_id);
+        let file_history = Arc::new(tokio::sync::Mutex::new(
+            luwu_core::file_history::FileHistory::new(&session_dir, &working_dir),
+        ));
+
+        let tools = builtin_tool_registry().with_file_history(file_history.clone());
         let events = EventBus::new(256);
         let engine = TurnEngine::new(
             provider.clone(),
@@ -103,6 +109,7 @@ impl AgentService {
             resolved,
             session_id,
             working_dir,
+            file_history,
         }
     }
 
@@ -148,6 +155,13 @@ impl AgentService {
         }
 
         let messages_for_workers = messages.clone();
+
+        // ── File history: snapshot before this turn starts ──
+        let msg_ref = user_message.chars().take(100).collect::<String>();
+        if let Err(e) = self.file_history.lock().await.make_snapshot(&msg_ref) {
+            tracing::warn!(%e, "File history make_snapshot failed");
+        }
+
         let event_rx = self
             .engine
             .run_stream(
