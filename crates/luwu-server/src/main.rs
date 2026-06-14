@@ -10,20 +10,16 @@
 //! `cargo run` with server already running:
 //!   → start TUI (connects to existing daemon)
 //!
-//! `cargo run --headless`:
-//!   → foreground server with stderr banner (manual/debug use)
-//!
-//! `cargo run --daemon` (internal, auto-spawned):
-//!   → background server, file-only logging, writes PID file
-//!
-//! The daemon lifecycle is independent of any TUI. Kill any TUI
-//! and the server keeps running for all other clients.
+//! The daemon auto-shuts down when no TUI has made a request for 30s.
+//! No manual shutdown needed — just close all TUI windows.
 
 use luwu_core::SessionManager;
 use luwu_server::app::AppState;
 use luwu_server::config::{Config, LoggingConfig};
 use std::net::SocketAddr;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing_subscriber::{fmt, prelude::*};
 
 #[cfg(tui_embedded)]
@@ -41,6 +37,8 @@ enum RunMode {
 const LUWU_PORT: u16 = 51740;
 const DAEMON_READY_TIMEOUT_MS: u64 = 15000;
 const DAEMON_POLL_INTERVAL_MS: u64 = 100;
+/// Daemon auto-shuts down if no TUI request arrives in this window.
+const IDLE_SHUTDOWN_SECS: u64 = 30;
 
 #[tokio::main]
 async fn main() {
@@ -126,11 +124,18 @@ async fn main() {
         });
 
     let http_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .timeout(Duration::from_secs(120))
+        .connect_timeout(Duration::from_secs(10))
+        .pool_idle_timeout(Duration::from_secs(90))
         .build()
         .expect("failed to build shared HTTP client");
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let last_request = Arc::new(AtomicU64::new(now_ms));
 
     let state = AppState {
         config,
@@ -139,6 +144,7 @@ async fn main() {
         skills,
         http_client,
         worker_tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
+        last_request: last_request.clone(),
     };
 
     let app = luwu_server::app::router(state);
@@ -153,25 +159,77 @@ async fn main() {
 
     match mode {
         RunMode::Daemon => {
-            // Write PID file so users can kill the daemon
             let pid_file = luwu_home.join("luwu.pid");
             let _ = std::fs::create_dir_all(&luwu_home);
             let _ = std::fs::write(&pid_file, std::process::id().to_string());
-            tracing::info!("Daemon PID {} written to {}", std::process::id(), pid_file.display());
+            tracing::info!("Daemon PID {} → {}", std::process::id(), pid_file.display());
 
             // Clean up PID file on exit
             let pid_file_clone = pid_file.clone();
             tokio::spawn(async move {
                 shutdown_signal().await;
                 let _ = std::fs::remove_file(&pid_file_clone);
-                tracing::info!("Daemon shutting down");
+                tracing::info!("Daemon shutting down (signal)");
                 std::process::exit(0);
             });
 
-            run_server(app, listener, &resolved, recovered, mode).await;
+            // ── Auto-shutdown: kill daemon when idle ──
+            let lr = last_request.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    let last = lr.load(Ordering::Relaxed);
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    if now - last > IDLE_SHUTDOWN_SECS * 1000 {
+                        tracing::info!(
+                            "No TUI activity for {IDLE_SHUTDOWN_SECS}s — auto-shutdown"
+                        );
+                        let pf = dirs::home_dir()
+                            .map(|h| h.join(".luwu").join("luwu.pid"))
+                            .unwrap_or_default();
+                        let _ = std::fs::remove_file(&pf);
+                        std::process::exit(0);
+                    }
+                }
+            });
+
+            tracing::info!(
+                "Daemon listening on 127.0.0.1:{LUWU_PORT} (model: {}, auto-shutdown: {IDLE_SHUTDOWN_SECS}s idle)",
+                resolved.model
+            );
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!("Server error: {e}");
+                    std::process::exit(1);
+                });
         }
         RunMode::Headless => {
-            run_server(app, listener, &resolved, recovered, mode).await;
+            eprintln!(
+                "\x1b[2m陆吾 v{} — 昆仑山的管家\x1b[0m",
+                env!("CARGO_PKG_VERSION")
+            );
+            eprintln!("\x1b[2mprovider: {}\x1b[0m", resolved.provider_name);
+            eprintln!("\x1b[2mmodel:    {}\x1b[0m", resolved.model);
+            eprintln!("\x1b[2msessions: {} recovered\x1b[0m", recovered);
+            eprintln!();
+            eprintln!("Listening on http://127.0.0.1:{LUWU_PORT}");
+            eprintln!();
+            eprintln!("\x1b[2mCtrl+C to stop.\x1b[0m");
+
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("Server error: {e}");
+                    std::process::exit(1);
+                });
+
+            eprintln!("\x1b[2m再见 👋\x1b[0m");
         }
         RunMode::Tui => unreachable!(),
     }
@@ -179,15 +237,11 @@ async fn main() {
 
 // ── Server detection + daemon spawning ──
 
-/// Ensure a server is running on addr. If not, spawn a detached daemon.
-/// Polls until the daemon is accepting connections (or timeout).
 async fn ensure_server_running(addr: SocketAddr) {
-    // Already running?
     if tokio::net::TcpStream::connect(addr).await.is_ok() {
         return;
     }
 
-    // Spawn detached daemon
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -206,7 +260,7 @@ async fn ensure_server_running(addr: SocketAddr) {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .process_group(0) // new process group → survives parent terminal death
+            .process_group(0)
             .spawn()
         {
             Ok(c) => c,
@@ -216,7 +270,6 @@ async fn ensure_server_running(addr: SocketAddr) {
                 std::process::exit(1);
             }
         };
-        // Intentionally drop — the daemon runs independently
     }
 
     #[cfg(not(unix))]
@@ -236,22 +289,18 @@ async fn ensure_server_running(addr: SocketAddr) {
         };
     }
 
-    // Poll until daemon is ready
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis(DAEMON_READY_TIMEOUT_MS);
-
+    let deadline =
+        std::time::Instant::now() + Duration::from_millis(DAEMON_READY_TIMEOUT_MS);
     loop {
         if std::time::Instant::now() >= deadline {
             eprintln!("Server daemon failed to start within {DAEMON_READY_TIMEOUT_MS}ms");
             eprintln!("Try 'cargo run --headless' to see server errors.");
             std::process::exit(1);
         }
-
         if tokio::net::TcpStream::connect(addr).await.is_ok() {
             break;
         }
-
-        tokio::time::sleep(std::time::Duration::from_millis(DAEMON_POLL_INTERVAL_MS)).await;
+        tokio::time::sleep(Duration::from_millis(DAEMON_POLL_INTERVAL_MS)).await;
     }
 }
 
@@ -293,58 +342,6 @@ async fn run_tui() {
     let _ = std::fs::remove_file(&tui_path);
 }
 
-// ── Server ──
-
-async fn run_server(
-    app: axum::Router,
-    listener: tokio::net::TcpListener,
-    resolved: &luwu_server::config::ResolvedConfig,
-    recovered: usize,
-    mode: RunMode,
-) {
-    match mode {
-        RunMode::Daemon => {
-            // Silent — logs go to file only, no terminal output
-            tracing::info!(
-                "Daemon listening on 127.0.0.1:{} (model: {})",
-                LUWU_PORT,
-                resolved.model
-            );
-            axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::error!("Server error: {e}");
-                    std::process::exit(1);
-                });
-        }
-        RunMode::Headless => {
-            eprintln!(
-                "\x1b[2m陆吾 v{} — 昆仑山的管家\x1b[0m",
-                env!("CARGO_PKG_VERSION")
-            );
-            eprintln!("\x1b[2mprovider: {}\x1b[0m", resolved.provider_name);
-            eprintln!("\x1b[2mmodel:    {}\x1b[0m", resolved.model);
-            eprintln!("\x1b[2msessions: {} recovered\x1b[0m", recovered);
-            eprintln!();
-            eprintln!("Listening on http://127.0.0.1:{LUWU_PORT}");
-            eprintln!();
-            eprintln!("\x1b[2mCtrl+C to stop.\x1b[0m");
-
-            axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("Server error: {e}");
-                    std::process::exit(1);
-                });
-
-            eprintln!("\x1b[2m再见 👋\x1b[0m");
-        }
-        _ => unreachable!(),
-    }
-}
-
 // ── Tracing ──
 
 fn init_tracing(log: &LoggingConfig) {
@@ -356,7 +353,6 @@ fn init_tracing(log: &LoggingConfig) {
 
     match mode {
         RunMode::Daemon | RunMode::Tui => {
-            // File ONLY, zero terminal output
             let log_dir = dirs::home_dir()
                 .map(|h| h.join(".luwu").join("logs"))
                 .unwrap_or_else(|| std::path::PathBuf::from("logs"));

@@ -84,6 +84,14 @@ export function useChatSession(): ChatSession {
     })();
   }, []);
 
+  // ── Heartbeat: ping every 10s so daemon knows we're alive ──
+  useEffect(() => {
+    const timer = setInterval(() => {
+      checkHealth().catch(() => {});
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, []);
+
   const cancel = useCallback(() => {
     if (abortRef.current) {
       abortRef.current.abort();

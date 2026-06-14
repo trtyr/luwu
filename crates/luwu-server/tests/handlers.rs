@@ -38,6 +38,7 @@ fn test_state() -> AppState {
         skills: luwu_core::SkillRegistry::new(),
         http_client: reqwest::Client::new(),
         worker_tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
+        last_request: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     }
 }
 
