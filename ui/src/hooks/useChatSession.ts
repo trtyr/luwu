@@ -169,7 +169,11 @@ export function useChatSession(): ChatSession {
     const toolIndexMap = new Map<string, number>();
 
     const flushText = () => {
-      if (currentText.length === 0) return;
+      // Guard: skip whitespace-only text (prevents empty ⏺ blocks)
+      if (currentText.trim().length === 0) {
+        currentText = '';
+        return;
+      }
       const last = blocks[blocks.length - 1];
       if (last && last.type === 'text') {
         last.text = currentText;
@@ -228,10 +232,17 @@ export function useChatSession(): ChatSession {
 
           case 'tool_completed': {
             const name = ev.name || ev.tool_name || '';
+            const rawResult = ev.result || ev.output || '';
+            // Detect errors in tool results
+            const lower = rawResult.toLowerCase(); const isErr = lower.includes('error')
+              || lower.includes('panicked')
+              || lower.includes('no such file')
+              || lower.includes('not found')
+              || lower.includes('failed');
             const idx = toolIndexMap.get(name);
             if (idx !== undefined && blocks[idx]?.type === 'tool') {
-              blocks[idx].tool.result = ev.result || ev.output;
-              blocks[idx].tool.status = 'done';
+              blocks[idx].tool.result = rawResult;
+              blocks[idx].tool.status = isErr ? 'error' : 'done';
             } else {
               flushText();
               currentText = '';
@@ -239,8 +250,8 @@ export function useChatSession(): ChatSession {
                 type: 'tool',
                 tool: {
                   name, args: '',
-                  result: ev.result || ev.output,
-                  status: 'done' as const,
+                  result: rawResult,
+                  status: (isErr ? 'error' : 'done') as 'error' | 'done',
                 },
               });
               toolIndexMap.set(name, blocks.length - 1);
