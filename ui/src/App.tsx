@@ -1,14 +1,13 @@
 // App.tsx — pure composition layer
 // Wires hooks → components. No business logic, no stream processing.
 //
-// ANTI-FLICKER: No <Static> component. All messages render in a single
-// <Box flexDirection="column">. The diff log-update (diff-log.ts) handles
-// incremental rendering: old unchanged messages are common prefix (skipped),
-// only streaming content + spinner near the bottom gets rewritten per frame.
-// This gives natural terminal scrollback + zero flicker.
+// RENDERING: Uses Ink <Static> to commit completed messages to terminal
+// scrollback (written once, never re-rendered). The dynamic area below
+// (streaming message + spinner + input + statusbar) is small (~10-15 lines),
+// so Ink's eraseLines cursor-up is always within terminal height → no flicker.
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, Static, useApp, useInput } from 'ink';
 import { theme } from './theme.js';
 import { UserMessage } from './components/UserMessage.js';
 import { AssistantMessage } from './components/AssistantMessage.js';
@@ -174,14 +173,19 @@ export function App() {
   }
 
   // ── Main composition ──
-  // All messages in one list — diff log-update handles incremental rendering.
-  // Old messages are common prefix (never rewritten), only bottom content changes.
+  // <Static> writes committed messages to terminal ONCE (enters scrollback).
+  // Dynamic area below is re-rendered each frame but stays small.
   return (
-    <Box flexDirection="column">
-      {chat.committedMessages.map((msg, index) => (
-        <MessageRow key={msg.id} msg={msg} addMargin={index > 0} />
-      ))}
+    <>
+      <Static key={chat.staticKey} items={chat.committedMessages}>
+        {(msg, index) => (
+          <Box key={msg.id} flexDirection="column">
+            <MessageRow msg={msg} addMargin={index > 0} />
+          </Box>
+        )}
+      </Static>
 
+      <Box flexDirection="column">
       {chat.streamingMessage && (
         <MessageRow
           msg={chat.streamingMessage}
@@ -225,7 +229,8 @@ export function App() {
       {notification && (
         <Text color={theme.inactive}>{notification}</Text>
       )}
-    </Box>
+      </Box>
+    </>
   );
 }
 
