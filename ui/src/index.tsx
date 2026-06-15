@@ -1,30 +1,41 @@
 #!/usr/bin/env bun
 // luwu TUI — entry point
 //
-// Rendering strategy: standard Ink with <Static> (Claude Code inline mode).
+// Rendering: standard Ink with <Static> (Claude Code inline mode).
+// <Static> commits messages to scrollback (written once, never re-rendered).
+// Dynamic area stays small → eraseLines cursor-up within terminal height → no flicker.
 //
-// <Static> writes completed messages to terminal ONCE — they enter scrollback
-// and are never touched again. The dynamic area (streaming message + spinner +
-// input + statusbar) is small (~10-15 lines), so Ink's eraseLines(N) cursor-up
-// is always well within terminal height → NO FLICKER.
-//
-// No hacks: no stdout.rows override, no custom diff-log, no alt-screen.
-// Terminal native scrollback works naturally for browsing history.
+// Bracketed paste: ESC[?2004h enables DEC mode 2004 so terminal wraps paste
+// content in ESC[200~ ... ESC[201~ markers for precise detection (doc 32 §2.1).
 
 import React from 'react';
 import { render } from 'ink';
 import { App } from './App';
 
-// Cleanup: show cursor on exit
+const isTTY = process.stdin.isTTY;
+
+// ── Bracketed paste mode (DEC 2004) ──
+function enableBracketedPaste() {
+  if (isTTY) process.stdout.write('\x1B[?2004h');
+}
+function disableBracketedPaste() {
+  if (isTTY) process.stdout.write('\x1B[?2004l');
+}
+
+// ── Cleanup on exit ──
 let _cleaned = false;
 function cleanup() {
   if (_cleaned) return;
   _cleaned = true;
-  process.stdout.write('\x1B[?25h');
+  process.stdout.write('\x1B[?25h'); // show cursor
+  disableBracketedPaste();
 }
 
 process.on('exit', cleanup);
 process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+
+// Enable bracketed paste before rendering
+enableBracketedPaste();
 
 const instance = render(React.createElement(App), {
   exitOnCtrlC: false,
