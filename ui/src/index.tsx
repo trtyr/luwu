@@ -1,61 +1,74 @@
 #!/usr/bin/env bun
 // luwu TUI — entry point
-// Anti-flicker: Ink clearTerminal bypass (doc 31)
 //
-// Root cause of flicker: Ink's onRender fallback — when outputHeight >=
-// stdout.rows, it uses ESC[2J (clearTerminal) instead of eraseLines.
-// This full-screen clear causes visible flicker on every frame.
+// Anti-flicker architecture (Claude Code doc 31):
 //
-// Fix: Override stdout.rows to MAX_SAFE_INTEGER so Ink NEVER hits the
-// clearTerminal path. Ink always uses eraseLines (ESC[2K per line),
-// which is flicker-free. Terminal scrollback is preserved because we
-// stay in main-screen mode — overflow content scrolls into history
-// naturally, and eraseLines cursor-up clamps at terminal top (harmless).
+// 1. stdout.rows = MAX_SAFE_INTEGER → Ink never hits clearTerminal (ESC[2J)
+// 2. Custom diff log-update (diff-log.ts) → replaces Ink's eraseLines(N)+full-rewrite
+//    with line-level diff: only outputs changed lines, cursor-up is always tiny
+// 3. No <Static> needed — all messages in one render, old messages naturally
+//    enter terminal scrollback, diff keeps re-renders minimal
 //
-// Alt-screen (ESC[?1049h) was tested but removed because it kills
-// terminal scrollback — users can't scroll up to see history.
+// The diff log-update is the key: standard Ink does eraseLines(N) + write(ALL)
+// every frame. When N > terminal rows, cursor-up clamps at top → FLICKER.
+// Our diff finds common prefix and only rewrites changed lines near the bottom.
 
 import React from 'react';
 import { render } from 'ink';
+import { throttle } from 'es-toolkit/compat';
 import { App } from './App';
+import { createDiffLog } from './diff-log';
 
 const isTTY = process.stdout.isTTY ?? false;
-const _realRows = process.stdout.rows ?? 24;
+const realRows = process.stdout.rows ?? 24;
 
-// ── Bypass Ink's clearTerminal ──
+// Expose real terminal dimensions (stdout.rows is overridden below)
+(globalThis as any).__realRows = realRows;
+
+// ── Bypass Ink's clearTerminal path ──
 // Ink's onRender: if (outputHeight >= stdout.rows) → ESC[2J (FLICKER!)
-// Override rows to MAX_SAFE_INTEGER so Ink always uses eraseLines (safe).
-// Safe because yoga layout only reads stdout.columns (width), never
-// stdout.rows (height) — and eraseLines cursor-up clamps harmlessly at
-// terminal top when previousLineCount > visible rows.
+// Override rows so this NEVER fires. Our diff log-update handles rendering.
 if (isTTY) {
-    Object.defineProperty(process.stdout, 'rows', {
-        value: Number.MAX_SAFE_INTEGER,
-        writable: true,
-        configurable: true,
-    });
+  Object.defineProperty(process.stdout, 'rows', {
+    value: Number.MAX_SAFE_INTEGER,
+    writable: true,
+    configurable: true,
+  });
 }
 
 // ── Cleanup: restore real rows on exit ──
 let _cleaned = false;
 function cleanup() {
-    if (_cleaned || !isTTY) return;
-    _cleaned = true;
-    try {
-        Object.defineProperty(process.stdout, 'rows', {
-            value: _realRows,
-            writable: true,
-            configurable: true,
-        });
-    } catch {}
+  if (_cleaned || !isTTY) return;
+  _cleaned = true;
+  try {
+    Object.defineProperty(process.stdout, 'rows', {
+      value: realRows,
+      writable: true,
+      configurable: true,
+    });
+  } catch {}
+  // Show cursor on exit
+  process.stdout.write('\x1B[?25h');
 }
 
-// Catch all exit paths: normal exit, crash, kill, SIGINT, SIGTERM
 process.on('exit', cleanup);
+process.on('SIGTERM', () => { cleanup(); process.exit(0); });
 
-// exitOnCtrlC: false — we handle Ctrl+C ourselves in App.tsx useInput
-// (streaming→cancel | has text→clear | empty→exit)
+// ── Create Ink instance ──
 const instance = render(React.createElement(App), { exitOnCtrlC: false });
 
-// When Ink unmounts normally (via useApp().exit()), also clean up
+// ── Monkey-patch: replace Ink's log with our diff-based renderer ──
+// This is the core anti-flicker mechanism.
+const diffLog = createDiffLog(process.stdout);
+(instance as any).log = diffLog;
+(instance as any).throttledLog = throttle(diffLog, 32, {
+  leading: true,
+  trailing: true,
+});
+
+// Expose diff log reset for clear/restore/newSession operations
+(globalThis as any).__diffLogReset = () => diffLog.clear();
+
+// Cleanup when Ink unmounts
 instance.waitUntilExit().then(cleanup);

@@ -1,13 +1,14 @@
 // App.tsx — pure composition layer
 // Wires hooks → components. No business logic, no stream processing.
 //
-// FLICKER-FREE RENDERING via Ink <Static>:
-//   <Static items={committedMessages}> — written to terminal ONCE, enters scrollback
-//   {streamingMessage} — dynamic area, re-rendered every frame (always small)
-// This keeps the re-render area tiny (1 message + input + status), preventing
-// Ink's eraseLines cursor-up from ever reaching the terminal top.
+// ANTI-FLICKER: No <Static> component. All messages render in a single
+// <Box flexDirection="column">. The diff log-update (diff-log.ts) handles
+// incremental rendering: old unchanged messages are common prefix (skipped),
+// only streaming content + spinner near the bottom gets rewritten per frame.
+// This gives natural terminal scrollback + zero flicker.
+
 import React, { useState, useCallback, useEffect } from 'react';
-import { Box, Text, Static, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput } from 'ink';
 import { theme } from './theme.js';
 import { UserMessage } from './components/UserMessage.js';
 import { AssistantMessage } from './components/AssistantMessage.js';
@@ -28,7 +29,7 @@ import { useChatSession } from './hooks/useChatSession.js';
 import { useCommands } from './hooks/useCommands.js';
 import { getTasks } from './services/api.js';
 
-// ── Message row dispatcher (same logic as old MessageList) ──
+// ── Message row dispatcher ──
 function MessageRow({ msg, addMargin }: { msg: DisplayMessage; addMargin: boolean }) {
   if (msg.role === 'user') return <UserMessage msg={msg} addMargin={addMargin} />;
   if (msg.role === 'assistant') return <AssistantMessage msg={msg} addMargin={addMargin} />;
@@ -173,16 +174,14 @@ export function App() {
   }
 
   // ── Main composition ──
+  // All messages in one list — diff log-update handles incremental rendering.
+  // Old messages are common prefix (never rewritten), only bottom content changes.
   return (
     <Box flexDirection="column">
-      {/* Committed messages — written to terminal once, enter scrollback */}
-      <Static key={chat.staticKey} items={chat.committedMessages}>
-        {(msg, index) => (
-          <MessageRow key={msg.id} msg={msg} addMargin={index > 0} />
-        )}
-      </Static>
+      {chat.committedMessages.map((msg, index) => (
+        <MessageRow key={msg.id} msg={msg} addMargin={index > 0} />
+      ))}
 
-      {/* Streaming message — re-rendered each frame, always small */}
       {chat.streamingMessage && (
         <MessageRow
           msg={chat.streamingMessage}

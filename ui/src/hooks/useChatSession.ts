@@ -120,8 +120,9 @@ export function useChatSession(): ChatSession {
   }, [sessionId]);
 
   const clearMessages = useCallback(() => {
-    // Clear visible screen + reset Ink's static tracking
-    process.stdout.write('\x1B[2J\x1B[H');
+    // Reset diff log so next render starts fresh
+    const reset = (globalThis as any).__diffLogReset;
+    if (reset) reset();
     streamingRef.current = null;
     setStreamingMessage(null);
     setCommittedMessages([]);
@@ -133,7 +134,8 @@ export function useChatSession(): ChatSession {
       abortRef.current.abort();
       if (sessionId) cancelTurn(sessionId).catch(() => {});
     }
-    process.stdout.write('\x1B[2J\x1B[H');
+    const reset = (globalThis as any).__diffLogReset;
+    if (reset) reset();
     setSessionId(id);
     setContextPct(0); setContextTokens(0); setIteration(0); setSpinnerVerb(undefined);
     setPhase('ready');
