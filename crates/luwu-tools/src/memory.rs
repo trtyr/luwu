@@ -178,7 +178,10 @@ impl Tool for MemoryTool {
 
     async fn execute(&self, input: Value, context: ToolContext) -> luwu_core::Result<ToolOutput> {
         debug!("Tool executing: memory");
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("search");
+        let action = input
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("search");
 
         let home = dirs::home_dir().map(|h| h.join(".luwu")).ok_or_else(|| {
             luwu_core::LuwuError::Io(std::io::Error::new(
@@ -200,10 +203,15 @@ impl Tool for MemoryTool {
                     return Ok(ToolOutput::text(touched_files(&store)));
                 }
 
-                let npath_re = RE_NPATH.get_or_init(|| Regex::new(r#"^#(\d+):path$"#).expect("static npath regex"));
+                let npath_re = RE_NPATH
+                    .get_or_init(|| Regex::new(r#"^#(\d+):path$"#).expect("static npath regex"));
                 if let Some(c) = npath_re.captures(q) {
                     let idx: usize = c[1].parse().unwrap_or(0);
-                    return Ok(ToolOutput::text(drill_down(&store, &context.working_dir, idx)));
+                    return Ok(ToolOutput::text(drill_down(
+                        &store,
+                        &context.working_dir,
+                        idx,
+                    )));
                 }
 
                 let n_re = RE_N.get_or_init(|| Regex::new(r#"^#(\d+)$"#).expect("static n regex"));
@@ -221,8 +229,14 @@ impl Tool for MemoryTool {
                     return Ok(ToolOutput::error("content is required for write."));
                 }
 
-                let target = input.get("target").and_then(|v| v.as_str()).unwrap_or("project");
-                let category = input.get("category").and_then(|v| v.as_str()).unwrap_or("insight");
+                let target = input
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("project");
+                let category = input
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("insight");
 
                 // Format entry with category tag
                 let entry = format!("[{category}] {content}");
@@ -236,9 +250,7 @@ impl Tool for MemoryTool {
                     Ok(_) => Ok(ToolOutput::text(format!(
                         "Memory saved ({target}/{category}): {content}"
                     ))),
-                    Err(e) => Ok(ToolOutput::error(format!(
-                        "Failed to write memory: {e}"
-                    ))),
+                    Err(e) => Ok(ToolOutput::error(format!("Failed to write memory: {e}"))),
                 }
             }
 
@@ -248,7 +260,10 @@ impl Tool for MemoryTool {
                     return Ok(ToolOutput::error("pattern is required for delete."));
                 }
 
-                let target = input.get("target").and_then(|v| v.as_str()).unwrap_or("project");
+                let target = input
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("project");
 
                 // Read the memory file, filter out matching entries, rewrite
                 let (file_path, file_content) = match target {

@@ -1,21 +1,28 @@
-// diff-log.ts — Custom diff-based log-update for Ink
+// diff-log.ts — Cell-level diff renderer (replaces Ink's logUpdate)
 //
 // Inspired by Claude Code's rendering engine (doc 31-anti-flicker-rendering.md).
 //
-// Standard Ink log-update: eraseLines(N) + write(ALL lines) every frame.
-//   → When N > terminal rows, cursor-up clamps at top → FLICKER.
+// Pipeline:
+//   Ink output string
+//       ↓  ansi.ts: parseOutput()
+//   Screen buffer (Int32Array: charIds + styleIds)
+//       ↓  diff against previous frame
+//   Changed cells list
+//       ↓  VirtualScreen cursor tracking
+//   ANSI diff output (cursor moves + char writes)
+//       ↓  stdout
 //
-// Our diff log-update: find common prefix, only rewrite changed lines.
-//   → Cursor-up is always small (distance to first change) → NO FLICKER.
-//   → Output volume is minimal (only changed lines) → FAST.
+// Standard Ink: eraseLines(N) + write(ALL lines) every frame → FLICKER when N > rows
+// Our diff:     only write CHANGED CELLS → cursor-up always tiny → NO FLICKER
 //
-// Example: spinner changes on last line of a 50-line output
-//   Standard: eraseLines(50) + write(50 lines) = ~4KB per frame
-//   Diff:     cursor up 1 + erase line + write 1 line = ~30 bytes per frame
+// Example: spinner changes 1 char on last line of 50-line output
+//   Standard: eraseLines(50) + write(50 lines) = ~4KB → cursor clamps at top → FLICKER
+//   Our diff: cursor up 1 + erase line + write 1 line = ~30 bytes → NO FLICKER
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
+import { Screen, findNextDiff, getChar, getCharWidth, getStyleAnsi } from './renderer/screen.js';
+import { parseOutput } from './renderer/ansi.js';
 
-const ESC = '\x1B';
+const ESC = '\x1b';
 
 export interface DiffLog {
   (str: string): void;
@@ -24,8 +31,9 @@ export interface DiffLog {
 }
 
 export function createDiffLog(stream: NodeJS.WriteStream): DiffLog {
-  let prevLines: string[] = [];
-  let prevOutput = '';
+  let prevScreen: Screen | null = null;
+  let prevStr = '';
+  let prevWidth = 0;
   let cursorHidden = false;
 
   const hideCursor = () => {
@@ -35,100 +43,153 @@ export function createDiffLog(stream: NodeJS.WriteStream): DiffLog {
     }
   };
 
+  // ── Virtual cursor tracking ──
+  // After each render, cursor is at (col=0, row=contentLines).
+  // This matches Ink's convention: output ends with implicit row advancement.
+  let curX = 0;
+  let curY = 0;
+  let curStyleId = -1; // unknown
+
   const render = (str: string) => {
     hideCursor();
 
-    const output = str + '\n';
-    if (output === prevOutput) return;
+    if (str === prevStr) return;
 
-    const nextLines = str.split('\n');
+    const width = stream.columns || 80;
+    const nextScreen = parseOutput(str, width);
+    const nextHeight = nextScreen.height;
 
-    // ── First render or after clear(): write everything ──
-    if (prevLines.length === 0) {
-      stream.write(output);
-      prevLines = nextLines;
-      prevOutput = output;
+    // ── First render: write everything ──
+    if (prevScreen === null || prevWidth !== width) {
+      stream.write(str + '\n');
+      prevScreen = nextScreen;
+      prevStr = str;
+      prevWidth = width;
+      curX = 0;
+      curY = nextHeight;
+      curStyleId = -1;
       return;
     }
 
-    // ── Find common prefix (the key optimization) ──
-    // Old messages never change → prefixLen is high → cursor-up is tiny
-    let prefixLen = 0;
-    const minLen = Math.min(prevLines.length, nextLines.length);
-    while (
-      prefixLen < minLen &&
-      prevLines[prefixLen] === nextLines[prefixLen]
-    ) {
-      prefixLen++;
-    }
+    const prevHeight = prevScreen.height;
+    const maxHeight = Math.max(prevHeight, nextHeight);
+    const out: string[] = [];
 
-    const linesToWrite = nextLines.length - prefixLen;
-    const linesToErase = prevLines.length - prefixLen;
+    // ── Diff: scan all cells, write only changed ones ──
+    // Most cells are unchanged → findNextDiff skips them in bulk.
+    for (let y = 0; y < maxHeight; y++) {
+      const rowStart = y * width;
+      const inPrev = y < prevHeight;
+      const inNext = y < nextHeight;
 
-    if (linesToWrite === 0 && linesToErase === 0) return;
+      let x = 0;
+      while (x < width) {
+        const idx = rowStart + x;
+        const pChar = inPrev ? prevScreen!.charIds[idx] : 0;
+        const pStyle = inPrev ? prevScreen!.styleIds[idx] : 0;
+        const nChar = inNext ? nextScreen.charIds[idx] : 0;
+        const nStyle = inNext ? nextScreen.styleIds[idx] : 0;
 
-    const ops: string[] = [];
+        // Skip identical cells using findNextDiff for both arrays
+        if (pChar === nChar && pStyle === nStyle) {
+          // Fast-forward past identical cells
+          const skip = findNextDiff(
+            prevScreen!.charIds,
+            nextScreen.charIds,
+            rowStart + x,
+            Math.min(width - x, (inPrev ? prevHeight : y + 1) - y),
+          );
+          // Also check styles match
+          const skipStyle = findNextDiff(
+            prevScreen!.styleIds,
+            nextScreen.styleIds,
+            rowStart + x,
+            Math.min(width - x, (inPrev ? prevHeight : y + 1) - y),
+          );
+          const realSkip = Math.min(skip, skipStyle);
+          x += realSkip > 0 ? realSkip : 1;
+          continue;
+        }
 
-    // ── 1. Move cursor up to the first changed line ──
-    // Cursor is at row prevLines.length (after last line).
-    // First changed line is at row prefixLen.
-    // Distance = prevLines.length - prefixLen = linesToErase.
-    if (linesToErase > 0) {
-      ops.push(`${ESC}[${linesToErase}A`);
-    }
+        // ── This cell changed — move cursor here ──
+        const dy = curY - y;
+        if (dy > 0) out.push(`${ESC}[${dy}A`);
+        else if (dy < 0) out.push(`${ESC}[${-dy}B`);
 
-    // ── 2. Overwrite from prefixLen to end of nextLines ──
-    for (let i = 0; i < linesToWrite; i++) {
-      ops.push(`${ESC}[2K`); // Erase entire line
-      ops.push(nextLines[prefixLen + i]);
-      if (i < linesToWrite - 1) {
-        ops.push('\n'); // Move to next row (down 1)
+        const dx = x - curX;
+        if (dx > 0) out.push(`${ESC}[${dx}C`);
+        else if (dx < 0) out.push(`${ESC}[${-dx}D`);
+
+        curY = y;
+        curX = x;
+
+        // ── Set style if changed ──
+        if (nStyle !== curStyleId) {
+          out.push(getStyleAnsi(nStyle));
+          curStyleId = nStyle;
+        }
+
+        // ── Write character ──
+        const char = getChar(nChar);
+        out.push(char);
+        const w = getCharWidth(nChar);
+        curX += w;
+
+        // Handle terminal auto-wrap at last column
+        if (curX >= width) {
+          curX = 0;
+          curY++;
+        }
+
+        x++;
       }
     }
 
-    // ── 3. Erase extra lines if content shrank ──
-    if (linesToErase > linesToWrite) {
-      const extra = linesToErase - linesToWrite;
-      for (let i = 0; i < extra; i++) {
-        ops.push('\n'); // Move down to the extra line
-        ops.push(`${ESC}[2K`); // Erase it
-      }
-      // Move cursor back up to the last content line
-      ops.push(`${ESC}[${extra}A`);
+    // ── Position cursor at (0, nextHeight) for next frame ──
+    out.push('\r');
+    const finalDy = nextHeight - curY;
+    if (finalDy > 0) out.push(`${ESC}[${finalDy}B`);
+    else if (finalDy < 0) out.push(`${ESC}[${-finalDy}A`);
+    curX = 0;
+    curY = nextHeight;
+
+    if (out.length > 0) {
+      stream.write(out.join(''));
     }
 
-    // ── 4. Final newline to position cursor after last line ──
-    // Matches Ink's convention: output ends with \n so cursor is
-    // at the start of a new line after all content.
-    if (linesToWrite > 0) {
-      ops.push('\n');
-    }
-
-    stream.write(ops.join(''));
-    prevLines = nextLines;
-    prevOutput = output;
+    // ── Swap buffers (double buffering) ──
+    prevScreen = nextScreen;
+    prevStr = str;
   };
 
   render.clear = () => {
-    if (prevLines.length > 0) {
-      // Erase all previous dynamic lines
-      stream.write(`${ESC}[${prevLines.length}A`);
-      for (let i = 0; i < prevLines.length; i++) {
+    if (prevScreen !== null) {
+      // Erase all previous lines
+      const h = prevScreen.height;
+      stream.write(`${ESC}[${h}A`);
+      for (let i = 0; i < h; i++) {
         stream.write(`${ESC}[2K`);
+        if (i < h - 1) stream.write(`${ESC}[1B`);
       }
-      stream.write(`${ESC}[G`); // Cursor to column 1
+      stream.write('\r');
     }
-    prevLines = [];
-    prevOutput = '';
+    prevScreen = null;
+    prevStr = '';
+    curX = 0;
+    curY = 0;
+    curStyleId = -1;
   };
 
   render.done = () => {
     if (cursorHidden) {
-      stream.write(`${ESC}[?25h`); // Show cursor
+      stream.write(`${ESC}[?25h`);
       cursorHidden = false;
     }
-    prevLines = [];
-    prevOutput = '';
+    prevScreen = null;
+    prevStr = '';
+    curX = 0;
+    curY = 0;
+    curStyleId = -1;
   };
 
   return render;

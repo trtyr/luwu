@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum::Json;
 use serde::Serialize;
 
 use crate::app::AppState;
@@ -21,9 +21,15 @@ pub async fn list_tasks(
 ) -> axum::response::Response {
     let home = match dirs::home_dir() {
         Some(h) => h,
-        None => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "no home dir").into_response(),
+        None => {
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "no home dir").into_response();
+        }
     };
-    let path = home.join(".luwu").join("sessions").join(&id).join("tasks.json");
+    let path = home
+        .join(".luwu")
+        .join("sessions")
+        .join(&id)
+        .join("tasks.json");
 
     match std::fs::read_to_string(&path) {
         Ok(content) => {

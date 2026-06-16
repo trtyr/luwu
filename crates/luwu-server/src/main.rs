@@ -38,7 +38,8 @@ const LUWU_PORT: u16 = 51740;
 const DAEMON_READY_TIMEOUT_MS: u64 = 15000;
 const DAEMON_POLL_INTERVAL_MS: u64 = 100;
 /// Daemon auto-shuts down if no TUI request arrives in this window.
-const IDLE_SHUTDOWN_SECS: u64 = 30;
+/// Must be >> heartbeat interval (10s) to survive event loop congestion.
+const IDLE_SHUTDOWN_SECS: u64 = 120;
 
 #[tokio::main]
 async fn main() {
@@ -103,25 +104,26 @@ async fn main() {
     let luwu_home = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".luwu");
-    let working_dir =
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     let sessions_dir = luwu_home.join("sessions");
     let sessions = match SessionManager::with_persistence(&sessions_dir) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Failed to init sessions dir {}: {e}", sessions_dir.display());
+            eprintln!(
+                "Failed to init sessions dir {}: {e}",
+                sessions_dir.display()
+            );
             std::process::exit(1);
         }
     };
 
     let recovered = sessions.load_from_disk().await;
 
-    let skills =
-        luwu_core::SkillRegistry::discover(&luwu_home, &working_dir).unwrap_or_else(|e| {
-            tracing::warn!("Skill discovery failed: {e}");
-            luwu_core::SkillRegistry::new()
-        });
+    let skills = luwu_core::SkillRegistry::discover(&luwu_home, &working_dir).unwrap_or_else(|e| {
+        tracing::warn!("Skill discovery failed: {e}");
+        luwu_core::SkillRegistry::new()
+    });
 
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -136,6 +138,7 @@ async fn main() {
         .as_millis() as u64;
 
     let last_request = Arc::new(AtomicU64::new(now_ms));
+    let sessions_for_shutdown = sessions.clone();
 
     let state = AppState {
         config,
@@ -174,7 +177,13 @@ async fn main() {
             });
 
             // ── Auto-shutdown: kill daemon when idle ──
+            // Two conditions must BOTH be true to shut down:
+            //   1. No HTTP request for IDLE_SHUTDOWN_SECS (no TUI heartbeat)
+            //   2. No session is_running (no active agent turn in progress)
+            // This prevents killing the daemon mid-stream when the TUI's
+            // setInterval heartbeat gets delayed by React render congestion.
             let lr = last_request.clone();
+            let auto_sessions = sessions_for_shutdown;
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(10)).await;
@@ -184,9 +193,17 @@ async fn main() {
                         .unwrap_or_default()
                         .as_millis() as u64;
                     if now - last > IDLE_SHUTDOWN_SECS * 1000 {
-                        tracing::info!(
-                            "No TUI activity for {IDLE_SHUTDOWN_SECS}s — auto-shutdown"
-                        );
+                        // Double-check: is any session actively running?
+                        let has_running = auto_sessions
+                            .list()
+                            .await
+                            .iter()
+                            .any(|s| s.is_running);
+                        if has_running {
+                            tracing::debug!("Idle for {}s but session still running — keeping alive", IDLE_SHUTDOWN_SECS);
+                            continue;
+                        }
+                        tracing::info!("No TUI activity for {IDLE_SHUTDOWN_SECS}s — auto-shutdown");
                         let pf = dirs::home_dir()
                             .map(|h| h.join(".luwu").join("luwu.pid"))
                             .unwrap_or_default();
@@ -289,8 +306,7 @@ async fn ensure_server_running(addr: SocketAddr) {
         };
     }
 
-    let deadline =
-        std::time::Instant::now() + Duration::from_millis(DAEMON_READY_TIMEOUT_MS);
+    let deadline = std::time::Instant::now() + Duration::from_millis(DAEMON_READY_TIMEOUT_MS);
     loop {
         if std::time::Instant::now() >= deadline {
             eprintln!("Server daemon failed to start within {DAEMON_READY_TIMEOUT_MS}ms");
@@ -399,9 +415,8 @@ fn init_tracing(log: &LoggingConfig) {
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
-        let mut term =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("install TERM signal handler");
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install TERM signal handler");
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = term.recv() => {}

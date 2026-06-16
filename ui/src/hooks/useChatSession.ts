@@ -4,9 +4,11 @@
 //   committedMessages → <Static> (written to terminal once, enters scrollback)
 //   streamingMessage  → dynamic area (re-rendered every frame, always small)
 //
-// When a turn completes, streamingMessage moves to committedMessages.
-// This keeps the dynamic area small (1 message + input + status), preventing
-// Ink's eraseLines cursor-up from ever reaching the terminal top.
+// PROGRESSIVE COMMIT: When tool calls complete, their blocks are immediately
+// committed to <Static> as partial assistant messages. This keeps the dynamic
+// area bounded (~10-15 lines: current text + active tool + spinner + input).
+// When a turn completes, the remaining streaming blocks are committed.
+
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
   DisplayMessage, ToolCallInfo, AssistantBlock, Phase, StreamEvent,
@@ -196,6 +198,32 @@ export function useChatSession(): ChatSession {
     let accReasoning = '';
     const toolIndexMap = new Map<string, number>();
 
+    // ── Progressive commit: completed blocks go to <Static> immediately ──
+    // This keeps the dynamic area small even for long responses.
+    let committedBlockCount = 0;
+
+    /** Commit blocks[0..endIdx] to <Static> as a partial assistant message */
+    const commitBlocksToStatic = (endIdx: number) => {
+      if (endIdx <= committedBlockCount) return;
+      const toCommit = blocks.slice(committedBlockCount, endIdx).map(b => ({ ...b }));
+      if (toCommit.length === 0) return;
+
+      const textContent = toCommit
+        .filter(b => b.type === 'text')
+        .map(b => (b as { type: 'text'; text: string }).text)
+        .join('\n\n');
+
+      const partialMsg: DisplayMessage = {
+        id: uid(),
+        role: 'assistant',
+        content: textContent,
+        blocks: toCommit,
+        timestamp: Date.now(),
+      };
+      setCommittedMessages(prev => [...prev, partialMsg]);
+      committedBlockCount = endIdx;
+    };
+
     // ── Throttle: batch React state updates to prevent flickering ──
     const SYNC_MS = 60;
     let lastSyncTime = 0;
@@ -211,9 +239,11 @@ export function useChatSession(): ChatSession {
       }
     };
 
-    // Update streamingRef + streamingMessage atomically
+    // Update streamingRef + streamingMessage — only show blocks AFTER committed
     const syncToReact = () => {
-      const textContent = blocks
+      // Streaming message only contains blocks that haven't been committed yet
+      const liveBlocks = blocks.slice(committedBlockCount).map(b => ({ ...b }));
+      const textContent = liveBlocks
         .filter(b => b.type === 'text')
         .map(b => (b as { type: 'text'; text: string }).text)
         .join('\n\n');
@@ -221,7 +251,7 @@ export function useChatSession(): ChatSession {
       if (streamingRef.current) {
         const updated: DisplayMessage = {
           ...streamingRef.current,
-          blocks: blocks.map(b => ({ ...b })),
+          blocks: liveBlocks,
           content: textContent,
           reasoning: reasoning || undefined,
         };
@@ -309,6 +339,10 @@ export function useChatSession(): ChatSession {
               });
               toolIndexMap.set(name, blocks.length - 1);
             }
+
+            // ── Progressive commit: this tool is done, commit everything up to it ──
+            const commitEnd = (idx !== undefined ? idx + 1 : blocks.length);
+            commitBlocksToStatic(commitEnd);
             immediateSync();
             break;
           }
@@ -344,10 +378,9 @@ export function useChatSession(): ChatSession {
         syncToReact();
       }
     } finally {
-      // ── Move streaming message to committed (<Static>) ──
-      const final = streamingRef.current;
-      if (final && (final.content.trim() || (final.blocks && final.blocks.length > 0))) {
-        setCommittedMessages(prev => [...prev, final]);
+      // ── Commit remaining streaming blocks to <Static> ──
+      if (blocks.length > committedBlockCount) {
+        commitBlocksToStatic(blocks.length);
       }
       streamingRef.current = null;
       setStreamingMessage(null);

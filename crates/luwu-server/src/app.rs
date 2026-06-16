@@ -1,13 +1,13 @@
 //! Application state, router wiring, and shared infrastructure.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::Router;
 use axum::extract::State;
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::Router;
 use tokio::task::JoinSet;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -141,9 +141,6 @@ pub fn router(state: AppState) -> Router {
         )
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .layer(middleware::from_fn_with_state(
-            shared.clone(),
-            heartbeat_mw,
-        ))
+        .layer(middleware::from_fn_with_state(shared.clone(), heartbeat_mw))
         .with_state(shared)
 }

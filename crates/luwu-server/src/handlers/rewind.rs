@@ -7,14 +7,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use luwu_core::file_history::{DiffStats, FileHistory};
 
-use crate::app::{create_provider, AppState};
+use crate::app::{AppState, create_provider};
 use crate::config::Config;
 
 // ── Response types ──
@@ -68,7 +68,8 @@ pub struct SummarizeResponse {
 // ── Helpers ──
 
 fn extract_text(msg: &luwu_core::Message) -> String {
-    msg.content.iter()
+    msg.content
+        .iter()
         .filter_map(|p| {
             if let luwu_core::ContentPart::Text { text } = p {
                 Some(text.clone())
@@ -93,7 +94,10 @@ pub async fn list_rewind_messages(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> Result<Json<RewindMessagesResponse>, (StatusCode, String)> {
-    let session = state.sessions.get(&session_id).await
+    let session = state
+        .sessions
+        .get(&session_id)
+        .await
         .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
 
     let session_dir = luwu_home().join("sessions").join(&session_id);
@@ -133,7 +137,10 @@ pub async fn rewind_session(
     Path(session_id): Path<String>,
     Json(req): Json<RewindRequest>,
 ) -> Result<Json<RewindResponse>, (StatusCode, String)> {
-    let session = state.sessions.get(&session_id).await
+    let session = state
+        .sessions
+        .get(&session_id)
+        .await
         .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
 
     // Find the user message at the given index
@@ -152,8 +159,10 @@ pub async fn rewind_session(
         }
     }
 
-    let target_index = target_abs_index
-        .ok_or((StatusCode::BAD_REQUEST, "Message index out of range".to_string()))?;
+    let target_index = target_abs_index.ok_or((
+        StatusCode::BAD_REQUEST,
+        "Message index out of range".to_string(),
+    ))?;
 
     let mut files_changed = Vec::new();
 
@@ -196,7 +205,10 @@ pub async fn summarize_session(
     Path(session_id): Path<String>,
     Json(req): Json<SummarizeRequest>,
 ) -> Result<Json<SummarizeResponse>, (StatusCode, String)> {
-    let session = state.sessions.get(&session_id).await
+    let session = state
+        .sessions
+        .get(&session_id)
+        .await
         .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
 
     // Find the absolute index of the user message at message_index
@@ -213,8 +225,10 @@ pub async fn summarize_session(
         }
     }
 
-    let target_index = target_abs_index
-        .ok_or((StatusCode::BAD_REQUEST, "Message index out of range".to_string()))?;
+    let target_index = target_abs_index.ok_or((
+        StatusCode::BAD_REQUEST,
+        "Message index out of range".to_string(),
+    ))?;
 
     let all_messages = &session.data.messages;
     let (to_summarize, to_keep): (Vec<luwu_core::Message>, Vec<luwu_core::Message>) =
@@ -240,9 +254,9 @@ pub async fn summarize_session(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let config = Config::load()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let resolved = config.resolve(None)
+    let config = Config::load().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let resolved = config
+        .resolve(None)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let provider = create_provider(&resolved, state.http_client.clone());
 
@@ -261,17 +275,22 @@ pub async fn summarize_session(
         stop_sequences: vec![],
     };
 
-    let summary = provider.complete(request).await
+    let summary = provider
+        .complete(request)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Update session: keep messages + summary
     let mut new_messages = to_keep.clone();
-    new_messages.push(luwu_core::Message::assistant(&format!(
+    new_messages.push(luwu_core::Message::assistant(format!(
         "📋 **Conversation summarized**\n\n{summary}"
     )));
 
     let removed = to_summarize.len();
-    state.sessions.update_messages(&session_id, new_messages).await;
+    state
+        .sessions
+        .update_messages(&session_id, new_messages)
+        .await;
 
     Ok(Json(SummarizeResponse {
         summary,

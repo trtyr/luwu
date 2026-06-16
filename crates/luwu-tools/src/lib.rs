@@ -18,9 +18,9 @@ pub mod error;
 pub mod grep;
 pub mod memory;
 pub mod read;
+pub mod todo;
 pub mod web_fetch;
 pub mod write;
-pub mod todo;
 
 pub mod hashline;
 use luwu_core::Tool;

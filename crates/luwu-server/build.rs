@@ -25,7 +25,11 @@ fn main() {
     // bun install if node_modules missing
     let node_modules = ui_dir.join("node_modules");
     if !node_modules.exists() {
-        match Command::new(&bun).arg("install").current_dir(&ui_dir).status() {
+        match Command::new(&bun)
+            .arg("install")
+            .current_dir(&ui_dir)
+            .status()
+        {
             Ok(s) if s.success() => {}
             _ => {
                 println!("cargo:warning=bun install failed — building headless-only");
@@ -41,10 +45,12 @@ fn main() {
     // --minify strips whitespace/variables
     let status = Command::new(&bun)
         .args([
-            "build", "src/index.tsx",
+            "build",
+            "src/index.tsx",
             "--compile",
             "--minify",
-            "--outfile", "dist/luwu-tui",
+            "--outfile",
+            "dist/luwu-tui",
         ])
         .current_dir(&ui_dir)
         .status();
@@ -67,7 +73,9 @@ fn main() {
 
 fn find_bun() -> Option<String> {
     let out = Command::new("which").arg("bun").output().ok()?;
-    if !out.status.success() { return None; }
+    if !out.status.success() {
+        return None;
+    }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() { None } else { Some(s) }
 }

@@ -17,9 +17,9 @@
 
 pub mod cycle;
 pub mod engine;
-pub mod file_history;
 pub mod error;
 pub mod event;
+pub mod file_history;
 pub mod llm;
 pub mod message;
 pub mod prompt;
@@ -34,6 +34,7 @@ pub use cycle::{CycleAction, CycleState};
 pub use engine::{CancelToken, TurnEngine, TurnResult};
 pub use error::{LuwuError, Result};
 pub use event::{Event, EventBus, SessionId, TurnEvent, TurnId};
+pub use file_history::{DiffStats, FileHistory, FileHistorySnapshot, FileHistoryState};
 pub use llm::{LlmEvent, LlmProvider, LlmRequest, LlmUsage, ToolDefinition};
 pub use message::{ContentPart, Message, Role};
 pub use prompt::{
@@ -47,4 +48,3 @@ pub use session_manager::{
 pub use skill::{Skill, SkillFrontmatter, SkillRegistry};
 pub use tool::{Tool, ToolContext, ToolOutput};
 pub use tool_registry::ToolRegistry;
-pub use file_history::{DiffStats, FileHistory, FileHistorySnapshot, FileHistoryState};
