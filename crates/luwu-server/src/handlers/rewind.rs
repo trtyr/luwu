@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use luwu_core::file_history::{DiffStats, FileHistory};
 
 use crate::app::{AppState, create_provider};
 use crate::config::Config;
+use crate::error::ApiError;
 
 // ── Response types ──
 
@@ -93,12 +93,12 @@ fn luwu_home() -> PathBuf {
 pub async fn list_rewind_messages(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> Result<Json<RewindMessagesResponse>, (StatusCode, String)> {
+) -> Result<Json<RewindMessagesResponse>, ApiError> {
     let session = state
         .sessions
         .get(&session_id)
         .await
-        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Session '{session_id}' not found")))?;
 
     let session_dir = luwu_home().join("sessions").join(&session_id);
     let fh = FileHistory::new(&session_dir, &state.working_dir);
@@ -136,12 +136,12 @@ pub async fn rewind_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(req): Json<RewindRequest>,
-) -> Result<Json<RewindResponse>, (StatusCode, String)> {
+) -> Result<Json<RewindResponse>, ApiError> {
     let session = state
         .sessions
         .get(&session_id)
         .await
-        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Session '{session_id}' not found")))?;
 
     // Find the user message at the given index
     let mut user_msg_count = 0usize;
@@ -159,10 +159,8 @@ pub async fn rewind_session(
         }
     }
 
-    let target_index = target_abs_index.ok_or((
-        StatusCode::BAD_REQUEST,
-        "Message index out of range".to_string(),
-    ))?;
+    let target_index = target_abs_index
+        .ok_or_else(|| ApiError::BadRequest("Message index out of range".to_string()))?;
 
     let mut files_changed = Vec::new();
 
@@ -204,12 +202,12 @@ pub async fn summarize_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(req): Json<SummarizeRequest>,
-) -> Result<Json<SummarizeResponse>, (StatusCode, String)> {
+) -> Result<Json<SummarizeResponse>, ApiError> {
     let session = state
         .sessions
         .get(&session_id)
         .await
-        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Session '{session_id}' not found")))?;
 
     // Find the absolute index of the user message at message_index
     let mut user_msg_count = 0usize;
@@ -225,10 +223,8 @@ pub async fn summarize_session(
         }
     }
 
-    let target_index = target_abs_index.ok_or((
-        StatusCode::BAD_REQUEST,
-        "Message index out of range".to_string(),
-    ))?;
+    let target_index = target_abs_index
+        .ok_or_else(|| ApiError::BadRequest("Message index out of range".to_string()))?;
 
     let all_messages = &session.data.messages;
     let (to_summarize, to_keep): (Vec<luwu_core::Message>, Vec<luwu_core::Message>) =
@@ -254,10 +250,10 @@ pub async fn summarize_session(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let config = Config::load().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let config = Config::load().map_err(|e| ApiError::Internal(e.to_string()))?;
     let resolved = config
         .resolve(None)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let provider = create_provider(&resolved, state.http_client.clone());
 
     let prompt = format!(
@@ -278,7 +274,7 @@ pub async fn summarize_session(
     let summary = provider
         .complete(request)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     // Update session: keep messages + summary
     let mut new_messages = to_keep.clone();

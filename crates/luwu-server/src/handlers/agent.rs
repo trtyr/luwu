@@ -14,6 +14,7 @@ use axum::response::sse::{Event as SseEvent, Sse};
 use luwu_core::{RunningGuard, TrySetRunningError};
 
 use crate::app::{AppState, create_provider};
+use crate::error::ApiError;
 use crate::services::agent_service::{AgentEvent, AgentService};
 use crate::types::*;
 
@@ -22,44 +23,39 @@ pub async fn agent_chat(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<AgentChatRequest>,
-) -> axum::response::Response {
+) -> Result<axum::response::Response, ApiError> {
     let should_stream = req.stream;
 
     // ── HTTP gate: atomic check-and-set running state ──
-    let cancel_token = match state.sessions.try_set_running(&id).await {
-        Ok(t) => t,
-        Err(TrySetRunningError::AlreadyRunning) => {
-            return (
-                axum::http::StatusCode::CONFLICT,
-                "Session already has a running turn",
-            )
-                .into_response();
-        }
-        Err(TrySetRunningError::NotFound) => {
-            return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
-        }
-    };
+    let cancel_token = state
+        .sessions
+        .try_set_running(&id)
+        .await
+        .map_err(|e| match e {
+            TrySetRunningError::AlreadyRunning => {
+                ApiError::Conflict("Session already has a running turn".to_string())
+            }
+            TrySetRunningError::NotFound => ApiError::NotFound("Session not found".to_string()),
+        })?;
 
-    // Safety net: auto-reset is_running on drop.
+    // Safety net: auto-reset is_running on drop. Any early return after this
+    // point (via `?`) will drop the guard, which calls set_running(false) so
+    // the session is left in a consistent state. We no longer need the
+    // hand-written `set_running(false)` cleanup on each error path.
     let _running_guard = RunningGuard::new(state.sessions.clone(), id.clone());
 
     // ── HTTP gate: session lookup ──
-    let session = match state.sessions.get(&id).await {
-        Some(s) => s,
-        None => {
-            let _ = state.sessions.set_running(&id, false).await;
-            return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
-        }
-    };
+    let session = state
+        .sessions
+        .get(&id)
+        .await
+        .ok_or_else(|| ApiError::NotFound(format!("Session '{id}' not found")))?;
 
     // ── HTTP gate: config resolution ──
-    let resolved = match state.config.resolve(session.data.provider.as_deref()) {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = state.sessions.set_running(&id, false).await;
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
-    };
+    let resolved = state
+        .config
+        .resolve(session.data.provider.as_deref())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     // ── Build service ──
     let provider = create_provider(&resolved, state.http_client.clone());
@@ -160,5 +156,5 @@ pub async fn agent_chat(
         axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
     );
 
-    sse.into_response()
+    Ok(sse.into_response())
 }

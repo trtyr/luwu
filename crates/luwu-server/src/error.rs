@@ -1,17 +1,17 @@
 //! Server-level error types.
 //!
-//! Currently handlers use inline `into_response()` for error mapping.
-//! This module is reserved for a future centralized error-handling layer.
-
-// ApiError and IntoResponseWithStatus were created in Phase 2 but are not
-// yet wired into handlers. They remain here as scaffolding for when we
-// centralize HTTP error mapping (instead of inline StatusCode tuples).
-#![allow(dead_code)]
+//! Centralized HTTP error mapping: handlers return `Result<_, ApiError>`
+//! and `ApiError`'s `IntoResponse` impl converts each variant to the
+//! appropriate status code + JSON body. New handlers should `use` this
+//! type and propagate errors via `?` instead of building inline
+//! `StatusCode` tuples.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use luwu_core::LuwuError;
+
+use crate::config::ConfigError;
 
 /// Centralized API error type for consistent HTTP status mapping.
 #[derive(Debug)]
@@ -28,6 +28,29 @@ impl From<LuwuError> for ApiError {
             LuwuError::Session(_) => ApiError::NotFound(e.to_string()),
             LuwuError::Config(_) => ApiError::BadRequest(e.to_string()),
             other => ApiError::Internal(other.to_string()),
+        }
+    }
+}
+
+/// Map `ConfigError` into the centralized `ApiError` so handlers can use
+/// `?` on `Config::load()` / `Config::resolve()` results.
+///
+/// Mapping rationale:
+/// - `Parse` / `InvalidConfig` → 400 BadRequest (the user authored a bad
+///   config.toml; they need to fix it)
+/// - `ProviderNotFound` → 404 NotFound (the user asked for a named provider
+///   that doesn't exist in the file)
+/// - `Io` / `NoDefaultProvider` → 500 Internal (server-side problem:
+///   filesystem or server misconfiguration)
+impl From<ConfigError> for ApiError {
+    fn from(e: ConfigError) -> Self {
+        match e {
+            ConfigError::Parse(_, _) => ApiError::BadRequest(e.to_string()),
+            ConfigError::InvalidConfig(_) => ApiError::BadRequest(e.to_string()),
+            ConfigError::ProviderNotFound(_) => ApiError::NotFound(e.to_string()),
+            ConfigError::Io(_, _) | ConfigError::NoDefaultProvider => {
+                ApiError::Internal(e.to_string())
+            }
         }
     }
 }

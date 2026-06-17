@@ -10,8 +10,6 @@
 //! `MemoryBackend` trait can be defined without `luwu-core` depending on
 //! `luwu-memory`).
 
-use luwu_core::memory_backend::{Observation, Priority, Reflection};
-
 // ---- Worker Prompts ----
 
 /// System prompt for the Observer worker.
@@ -104,6 +102,11 @@ pub fn should_reflect(tokens_since_last: usize, thresholds: &WorkerThresholds) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    // These types live in `luwu_core::memory_backend` (moved there so
+    // the `MemoryBackend` trait can reference them without `luwu-core`
+    // depending on `luwu-memory`). The production worker functions no
+    // longer need them directly, but the test module does.
+    use luwu_core::memory_backend::{Observation, Priority, Reflection};
 
     #[test]
     fn test_observation_creation() {

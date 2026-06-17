@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::{LuwuError, Result};
 use crate::event::{Event, EventBus, TurnEvent, TurnId};
@@ -95,10 +95,21 @@ pub struct TurnEngine {
     skills: crate::skill::SkillRegistry,
     events: EventBus,
     working_dir: PathBuf,
+    /// Defensive cap on agent loop iterations.
+    ///
+    /// Even though `CancelToken` covers user-initiated cancellation, a runaway
+    /// LLM (e.g. stuck calling the same tool in a loop) needs an automatic
+    /// hard stop. Default 100 is generous enough for complex tool chains but
+    /// low enough to bound resource consumption. Configurable via
+    /// [`TurnEngine::with_max_iterations`].
+    max_iterations: u32,
 }
 
 impl TurnEngine {
     /// Create a new turn engine.
+    ///
+    /// `max_iterations` defaults to 100 as a defensive cap. Use
+    /// [`TurnEngine::with_max_iterations`] to override.
     pub fn new(
         provider: std::sync::Arc<dyn LlmProvider>,
         tools: ToolRegistry,
@@ -112,7 +123,18 @@ impl TurnEngine {
             skills,
             events,
             working_dir,
+            max_iterations: Self::DEFAULT_MAX_ITERATIONS,
         }
+    }
+
+    /// Default iteration cap. Generous for complex tool chains, low enough to
+    /// bound resource consumption if the LLM gets stuck.
+    pub const DEFAULT_MAX_ITERATIONS: u32 = 100;
+
+    /// Override the iteration cap. Pass `u32::MAX` to effectively disable.
+    pub fn with_max_iterations(mut self, n: u32) -> Self {
+        self.max_iterations = n;
+        self
     }
 
     /// Run a single turn: send the user message through the full agent loop.
@@ -149,6 +171,21 @@ impl TurnEngine {
 
         loop {
             iteration += 1;
+            // Defensive iteration cap against runaway LLM loops.
+            // CancelToken handles user cancellation, but a buggy LLM
+            // stuck calling the same tool in a loop needs an automatic
+            // hard stop to bound resource consumption.
+            if iteration > self.max_iterations {
+                warn!(
+                    iteration,
+                    max = self.max_iterations,
+                    "Max iterations reached, aborting turn"
+                );
+                return Err(LuwuError::Llm(format!(
+                    "max iterations ({}) reached",
+                    self.max_iterations
+                )));
+            }
 
             result.llm_calls += 1;
 
@@ -308,7 +345,11 @@ impl TurnEngine {
         let skills = self.skills.clone();
         let events = self.events.clone();
         let working_dir = self.working_dir.clone();
-        let system_prompt = system_prompt_with_tools_and_skills(&tools.tool_names(), &skills);
+        let mut system_prompt = system_prompt_with_tools_and_skills(&tools.tool_names(), &skills);
+        // Clone fields used by the spawned task. `self` is borrowed by the
+        // outer method so anything captured by the async move block must be
+        // moved (or owned). `u32` is Copy so a plain `let` is enough.
+        let max_iterations = self.max_iterations;
 
         tokio::spawn(async move {
             if let Some(cancel) = &cancel
@@ -347,6 +388,23 @@ impl TurnEngine {
                 }
 
                 iteration += 1;
+                // Defensive iteration cap against runaway LLM loops.
+                if iteration > max_iterations {
+                    tracing::warn!(
+                        iteration,
+                        max = max_iterations,
+                        "Max iterations reached, aborting turn"
+                    );
+                    let _ = tx
+                        .send(TurnEvent::Error {
+                            message: format!(
+                                "max iterations ({}) reached",
+                                max_iterations
+                            ),
+                        })
+                        .await;
+                    break;
+                }
                 tracing::debug!("Iteration {} started", iteration);
 
                 llm_calls += 1;
@@ -469,23 +527,24 @@ impl TurnEngine {
                 }
 
                 // Detect skill reference in assistant text and inject instructions.
-                // P0 fix: skills are system instructions, not user input — use Role::System
-                // to avoid role confusion and prompt-injection-style attacks where the
-                // model treats skill content as a user message.
+                //
+                // P0 fix: append to `system_prompt` (LlmRequest's dedicated system
+                // field) rather than pushing a `Role::System` message into the
+                // middle of `all_messages`. OpenAI's chat completion API and
+                // Anthropic's messages API both require system instructions at the
+                // START of the conversation — injecting system content after user
+                // or assistant turns causes 400 errors with messages like
+                // "messages must alternate between user and assistant roles".
+                // The `system_prompt` field is set as LlmRequest.system_prompt
+                // and sent as the `system` parameter on every iteration.
                 if let Some(skill_name) = skills.detect_skill_reference(&current_text)
                     && let Some(skill) = skills.get(&skill_name)
                 {
                     tracing::info!("Skill activated: {}", skill_name);
-                    let inject = format!(
+                    system_prompt.push_str(&format!(
                         "\n\n[Skill activated: {}]\n{}\n\nFollow these instructions for the current task.",
                         skill.name, skill.instructions
-                    );
-                    all_messages.push(crate::message::Message {
-                        role: crate::message::Role::System,
-                        content: vec![crate::message::ContentPart::Text { text: inject }],
-                        name: None,
-                        tool_call_id: None,
-                    });
+                    ));
                 }
                 if !current_text.is_empty() {
                     content_parts.push(ContentPart::Text {

@@ -19,9 +19,44 @@ use luwu_server::config::{Config, LoggingConfig};
 use luwu_server::pid_file::PidFile;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing_subscriber::{fmt, prelude::*};
+
+/// Global storage for `tracing_appender::non_blocking` worker guards.
+///
+/// `WorkerGuard` is what keeps the background log-flushing thread alive
+/// and ensures buffered log lines are flushed on drop. The old code
+/// `mem::forget(guard)`'d these, which worked but meant any in-flight
+/// logs were lost on non-graceful shutdown (e.g. process kill, panic).
+///
+/// Now we stash the guards in a process-lifetime `OnceLock` and
+/// explicitly flush them from `shutdown_signal` so the rolling-file
+/// appender writes its last batch before the process exits.
+static TRACING_GUARDS: OnceLock<Mutex<Vec<tracing_appender::non_blocking::WorkerGuard>>> =
+    OnceLock::new();
+
+/// Push a guard into the global storage so it stays alive for the
+/// duration of the process. Called from `init_tracing` after creating
+/// each `non_blocking` writer.
+fn push_tracing_guard(guard: tracing_appender::non_blocking::WorkerGuard) {
+    TRACING_GUARDS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .expect("tracing guards mutex poisoned")
+        .push(guard);
+}
+
+/// Take all stored guards out of the global and drop them, which
+/// flushes any buffered log lines. Call from `shutdown_signal` so the
+/// rolling-file appender writes its tail before exit.
+fn flush_tracing_guards() {
+    if let Some(mutex) = TRACING_GUARDS.get() {
+        if let Ok(mut guards) = mutex.lock() {
+            guards.clear();
+        }
+    }
+}
 
 #[cfg(tui_embedded)]
 const TUI_BINARY: &[u8] = include_bytes!("../../../ui/dist/luwu-tui");
@@ -382,7 +417,7 @@ fn init_tracing(log: &LoggingConfig) {
 
             let file_appender = tracing_appender::rolling::daily(&log_dir, "luwu.log");
             let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
-            std::mem::forget(guard);
+            push_tracing_guard(guard);
 
             let file_layer = if is_json {
                 fmt::layer().json().with_writer(file_writer).boxed()
@@ -396,7 +431,7 @@ fn init_tracing(log: &LoggingConfig) {
             if let Some(path) = &log.file {
                 let file_appender = tracing_appender::rolling::daily(".", path);
                 let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
-                std::mem::forget(guard);
+                push_tracing_guard(guard);
 
                 let file_layer = fmt::layer().json().with_writer(file_writer);
                 let console_layer = if is_json {
@@ -419,6 +454,11 @@ fn init_tracing(log: &LoggingConfig) {
 }
 
 async fn shutdown_signal() {
+    // Flush tracing_appender worker guards so any buffered log lines are
+    // written to the rolling file before the process exits. Without this,
+    // the last few hundred milliseconds of logs would be lost.
+    flush_tracing_guards();
+
     #[cfg(unix)]
     {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

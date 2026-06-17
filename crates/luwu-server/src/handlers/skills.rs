@@ -7,6 +7,7 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 
 use crate::app::AppState;
+use crate::error::ApiError;
 
 /// GET /v1/skills — list all loaded skills.
 pub async fn list_skills(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -27,17 +28,18 @@ pub async fn list_skills(State(state): State<Arc<AppState>>) -> axum::response::
 pub async fn get_skill_detail(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
-) -> axum::response::Response {
-    let Some(skill) = state.skills.get(&name) else {
-        return (axum::http::StatusCode::NOT_FOUND, "Skill not found").into_response();
-    };
+) -> Result<axum::response::Response, ApiError> {
+    let skill = state
+        .skills
+        .get(&name)
+        .ok_or_else(|| ApiError::NotFound(format!("Skill '{name}' not found")))?;
     let files = state.skills.skill_files(&name);
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "name": skill.name,
         "description": skill.description,
         "instructions": skill.instructions,
         "base_path": skill.base_path.to_string_lossy(),
         "files": files,
     }))
-    .into_response()
+    .into_response())
 }
