@@ -33,7 +33,6 @@ pub use deterministic::{DeterministicSummary, FileChange, compile as compile_sum
 pub use history::{HistoryEntry, HistoryLog, TokenEstimator};
 pub use search_index::{SearchIndex, SearchResult};
 pub use store::MemoryStore;
-pub use workers::{
-    Observation, Priority, Reflection, WorkerThresholds, dropper_prompt, observer_prompt,
-    reflector_prompt,
-};
+pub use workers::{WorkerThresholds, dropper_prompt, observer_prompt, reflector_prompt};
+// Re-export the domain types from luwu-core for backward compatibility.
+pub use luwu_core::{Observation, Priority, Reflection};

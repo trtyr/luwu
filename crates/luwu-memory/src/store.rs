@@ -8,6 +8,7 @@
 
 use crate::checkpoint::Checkpoint;
 use crate::history::{HistoryEntry, HistoryLog, TokenEstimator};
+use luwu_core::memory_backend::{Observation, Reflection};
 use luwu_core::Message;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -352,27 +353,27 @@ impl MemoryStore {
     // ---- SessionLedger: Observations & Reflections ----
 
     /// Append an observation to the session ledger (JSONL).
-    pub fn append_observation(&self, obs: &crate::workers::Observation) -> std::io::Result<()> {
+    pub fn append_observation(&self, obs: &Observation) -> std::io::Result<()> {
         let path = self.session_root.join("observations.jsonl");
         let line = serde_json::to_string(obs).map_err(std::io::Error::other)?;
         append_to_file(&path, &format!("{line}\n"))
     }
 
     /// Append a reflection to the session ledger (JSONL).
-    pub fn append_reflection(&self, refl: &crate::workers::Reflection) -> std::io::Result<()> {
+    pub fn append_reflection(&self, refl: &Reflection) -> std::io::Result<()> {
         let path = self.session_root.join("reflections.jsonl");
         let line = serde_json::to_string(refl).map_err(std::io::Error::other)?;
         append_to_file(&path, &format!("{line}\n"))
     }
 
     /// Read all observations from the session ledger.
-    pub fn read_observations(&self) -> Vec<crate::workers::Observation> {
+    pub fn read_observations(&self) -> Vec<Observation> {
         let path = self.session_root.join("observations.jsonl");
         read_jsonl(&path)
     }
 
     /// Read all reflections from the session ledger.
-    pub fn read_reflections(&self) -> Vec<crate::workers::Reflection> {
+    pub fn read_reflections(&self) -> Vec<Reflection> {
         let path = self.session_root.join("reflections.jsonl");
         read_jsonl(&path)
     }
@@ -483,6 +484,44 @@ impl MemoryStore {
         &self.project_root
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// MemoryBackend impl — exposes MemoryStore to luwu-tools via the
+// microkernel-defined trait. This is the only place luwu-memory touches the
+// abstraction; everything else stays concrete and storage-specific.
+// ---------------------------------------------------------------------------
+
+impl luwu_core::memory_backend::MemoryBackend for MemoryStore {
+    fn read_observations(&self) -> Vec<Observation> {
+        self.read_observations()
+    }
+
+    fn read_reflections(&self) -> Vec<Reflection> {
+        self.read_reflections()
+    }
+
+    fn search_all(&self, query: &str) -> String {
+        self.search_all(query)
+    }
+
+    fn append_global_entry(&self, entry: &str) -> luwu_core::memory_backend::MemoryResult<()> {
+        self.append_global_entry(entry).map_err(|e| Box::new(e) as _)
+    }
+
+    fn append_project_entry(&self, entry: &str) -> luwu_core::memory_backend::MemoryResult<()> {
+        self.append_project_entry(entry).map_err(|e| Box::new(e) as _)
+    }
+
+    fn global_path(&self) -> &Path {
+        self.global_path()
+    }
+
+    fn project_path(&self) -> PathBuf {
+        self.project_path()
+    }
+}
+
 
 /// Hash a path to a short directory name.
 fn hash_path(path: &Path) -> String {

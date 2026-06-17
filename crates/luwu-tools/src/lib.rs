@@ -23,10 +23,14 @@ pub mod web_fetch;
 pub mod write;
 
 pub mod hashline;
+use luwu_core::memory_backend::MemoryBackendFactory;
 use luwu_core::Tool;
 
-/// Re-export all built-in tools as a ready-made list.
-pub fn all_builtin_tools() -> Vec<Box<dyn Tool>> {
+/// Build the list of built-in tools. The caller must provide a
+/// `MemoryBackendFactory` so the `memory` tool can be wired to a concrete
+/// backend (typically `MemoryStore` from `luwu-memory`). The factory pattern
+/// keeps `luwu-tools` decoupled from `luwu-memory` (review P2 #22).
+pub fn all_builtin_tools(memory_factory: MemoryBackendFactory) -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(bash::BashTool::new()),
         Box::new(read::ReadTool::new()),
@@ -34,7 +38,7 @@ pub fn all_builtin_tools() -> Vec<Box<dyn Tool>> {
         Box::new(edit::EditTool::new()),
         Box::new(grep::GrepTool::new()),
         Box::new(web_fetch::WebFetchTool::new()),
-        Box::new(memory::MemoryTool::new()),
+        Box::new(memory::MemoryTool::new(memory_factory)),
         Box::new(todo::TodoTool::new()),
     ]
 }

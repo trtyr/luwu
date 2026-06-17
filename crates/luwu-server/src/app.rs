@@ -12,9 +12,11 @@ use tokio::task::JoinSet;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use luwu_core::memory_backend::{MemoryBackend, MemoryBackendFactory};
 use luwu_core::{LlmProvider, SessionManager, ToolRegistry};
 use luwu_llm::anthropic::AnthropicProvider;
 use luwu_llm::openai::OpenAiProvider;
+use luwu_memory::MemoryStore;
 
 use crate::config::{Config, ResolvedConfig};
 use crate::handlers;
@@ -42,8 +44,15 @@ impl AppState {
 }
 
 pub fn builtin_tool_registry() -> ToolRegistry {
+    // Memory backend factory: each `memory` tool invocation gets a fresh
+    // `MemoryStore` so concurrent calls don't share state.
+    let memory_factory: MemoryBackendFactory = Arc::new(
+        |home, working_dir, session_id| -> Box<dyn MemoryBackend> {
+            Box::new(MemoryStore::new(home, working_dir, session_id))
+        },
+    );
     let mut builder = ToolRegistry::builder();
-    for tool in luwu_tools::all_builtin_tools() {
+    for tool in luwu_tools::all_builtin_tools(memory_factory) {
         builder = builder.register(tool);
     }
     builder.build()

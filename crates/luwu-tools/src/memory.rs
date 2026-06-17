@@ -8,28 +8,84 @@
 //!
 //! Categories: failure, correction, insight, preference, convention, tool-quirk
 //! (categories are advisory tags in the entry text, not enforced structurally)
+//!
+//! ## Architecture (P2 #22 decoupling)
+//!
+//! This module does **not** depend on `luwu-memory`. It uses the
+//! `MemoryBackend` trait from `luwu-core` instead, so any backend
+//! implementation (filesystem-backed `MemoryStore` from `luwu-memory`, or
+//! a test mock) can be plugged in. The `MemoryBackendFactory` closure
+//! creates a fresh backend per `execute()` call to avoid state bleed
+//! across concurrent invocations.
 
 use async_trait::async_trait;
+use luwu_core::memory_backend::{MemoryBackend, MemoryBackendFactory, MemoryResult};
 use luwu_core::{Tool, ToolContext, ToolOutput};
-use luwu_memory::MemoryStore;
 use regex::Regex;
 use serde_json::Value;
 use std::sync::OnceLock;
 use tracing::debug;
 
-pub struct MemoryTool;
+/// Memory tool. Holds a `MemoryBackendFactory` and uses it to create a
+/// fresh `Box<dyn MemoryBackend>` on every `execute()` call.
+pub struct MemoryTool {
+    factory: MemoryBackendFactory,
+}
 
 impl MemoryTool {
-    pub fn new() -> Self {
-        Self
+    /// Create a new `MemoryTool` that builds backends via the given factory.
+    pub fn new(factory: MemoryBackendFactory) -> Self {
+        Self { factory }
     }
 }
 
 impl Default for MemoryTool {
     fn default() -> Self {
-        Self
+        // No-op factory that errors — callers must provide a real factory.
+        // This exists so the type can be `Default` for convenience wrappers
+        // (the actual `all_builtin_tools` always passes a real factory).
+        Self::new(Arc::new(|_home, _working_dir, _session_id| -> Box<dyn MemoryBackend> {
+            Box::new(StubBackend)
+        }))
     }
 }
+
+// `Arc` import shim so `Default::default` compiles.
+use std::sync::Arc;
+
+/// Stub backend used by `Default` — returns errors for everything. Real
+/// instantiation always goes through `MemoryTool::new(factory)` with a
+/// proper `MemoryBackendFactory` (see `all_builtin_tools` in lib.rs).
+struct StubBackend;
+
+impl MemoryBackend for StubBackend {
+    fn read_observations(&self) -> Vec<luwu_core::memory_backend::Observation> {
+        vec![]
+    }
+    fn read_reflections(&self) -> Vec<luwu_core::memory_backend::Reflection> {
+        vec![]
+    }
+    fn search_all(&self, _query: &str) -> String {
+        "memory backend not configured (use MemoryTool::new with a real factory)".to_string()
+    }
+    fn append_global_entry(&self, _entry: &str) -> MemoryResult<()> {
+        Err("memory backend not configured".into())
+    }
+    fn append_project_entry(&self, _entry: &str) -> MemoryResult<()> {
+        Err("memory backend not configured".into())
+    }
+    fn global_path(&self) -> &std::path::Path {
+        std::path::Path::new("/dev/null")
+    }
+    fn project_path(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from("/dev/null")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers — all take `&dyn MemoryBackend` so they don't care about the
+// concrete type. Tests can call these with a mock.
+// ---------------------------------------------------------------------------
 
 fn path_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -40,7 +96,7 @@ fn path_regex() -> &'static Regex {
     })
 }
 
-fn expand_observation(store: &MemoryStore, index: usize) -> String {
+fn expand_observation(store: &dyn MemoryBackend, index: usize) -> String {
     let obs_list = store.read_observations();
     if index >= obs_list.len() {
         return format!("No observation at index {index}. Total: {}", obs_list.len());
@@ -52,7 +108,7 @@ fn expand_observation(store: &MemoryStore, index: usize) -> String {
     )
 }
 
-fn drill_down(store: &MemoryStore, working_dir: &std::path::Path, index: usize) -> String {
+fn drill_down(store: &dyn MemoryBackend, working_dir: &std::path::Path, index: usize) -> String {
     let obs_list = store.read_observations();
     if index >= obs_list.len() {
         return format!("No observation at index {index}. Total: {}", obs_list.len());
@@ -72,8 +128,16 @@ fn drill_down(store: &MemoryStore, working_dir: &std::path::Path, index: usize) 
     for p in &paths {
         match std::fs::read_to_string(working_dir.join(p)) {
             Ok(content) => {
-                let t = if content.len() > 5000 {
-                    format!("{}...[truncated]", &content[..5000])
+                // Safe truncation at UTF-8 char boundary (defensive — content
+                // from external files can contain CJK).
+                let slice_end = content
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 5000)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(content.len());
+                let t = if slice_end < content.len() {
+                    format!("{}...[truncated]", &content[..slice_end])
                 } else {
                     content
                 };
@@ -85,7 +149,7 @@ fn drill_down(store: &MemoryStore, working_dir: &std::path::Path, index: usize) 
     results.join("\n\n")
 }
 
-fn touched_files(store: &MemoryStore) -> String {
+fn touched_files(store: &dyn MemoryBackend) -> String {
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for o in store.read_observations() {
         for m in path_regex().find_iter(&o.content) {
@@ -189,7 +253,11 @@ impl Tool for MemoryTool {
                 "home dir not found",
             ))
         })?;
-        let store = MemoryStore::new(&home, &context.working_dir, "");
+
+        // Build a fresh backend via the factory (was: `MemoryStore::new`).
+        // This is the decoupling point — luwu-tools no longer knows about
+        // `MemoryStore`, only the `MemoryBackend` trait.
+        let store = (self.factory)(&home, &context.working_dir, "");
 
         match action {
             "search" => {
@@ -200,7 +268,7 @@ impl Tool for MemoryTool {
                 let q = query.trim();
 
                 if q == "mode:touched" {
-                    return Ok(ToolOutput::text(touched_files(&store)));
+                    return Ok(ToolOutput::text(touched_files(&*store)));
                 }
 
                 let npath_re = RE_NPATH
@@ -208,7 +276,7 @@ impl Tool for MemoryTool {
                 if let Some(c) = npath_re.captures(q) {
                     let idx: usize = c[1].parse().unwrap_or(0);
                     return Ok(ToolOutput::text(drill_down(
-                        &store,
+                        &*store,
                         &context.working_dir,
                         idx,
                     )));
@@ -217,7 +285,7 @@ impl Tool for MemoryTool {
                 let n_re = RE_N.get_or_init(|| Regex::new(r#"^#(\d+)$"#).expect("static n regex"));
                 if let Some(c) = n_re.captures(q) {
                     let idx: usize = c[1].parse().unwrap_or(0);
-                    return Ok(ToolOutput::text(expand_observation(&store, idx)));
+                    return Ok(ToolOutput::text(expand_observation(&*store, idx)));
                 }
 
                 Ok(ToolOutput::text(store.search_all(query)))

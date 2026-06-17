@@ -4,100 +4,13 @@
 //! - Observer: extracts timestamped facts from recent conversation (frequent).
 //! - Reflector: synthesizes durable reflections from observations (less frequent).
 //! - Dropper: prunes low-value observations when pool exceeds budget (on-demand).
+//!
+//! `Priority`, `Observation`, `Reflection` are re-exported from
+//! `luwu_core::memory_backend` (the microkernel owns these domain types so the
+//! `MemoryBackend` trait can be defined without `luwu-core` depending on
+//! `luwu-memory`).
 
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
-
-/// Generate a 12-character hex ID (like pi-blackhole) for traceability.
-fn gen_hex_id() -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .hash(&mut hasher);
-    let thread_id = std::thread::current().id();
-    thread_id.hash(&mut hasher);
-    let full = format!("{:016x}", hasher.finish());
-    full[..12].to_string()
-}
-
-/// Priority level for observations.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Priority {
-    High,
-    Medium,
-    Low,
-}
-
-impl std::fmt::Display for Priority {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::High => write!(f, "high"),
-            Self::Medium => write!(f, "medium"),
-            Self::Low => write!(f, "low"),
-        }
-    }
-}
-
-/// A timestamped observation extracted by the Observer worker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Observation {
-    /// 12-char hex ID for traceability.
-    pub id: String,
-    /// ISO 8601 timestamp.
-    pub timestamp: String,
-    /// Priority (high/medium/low).
-    pub priority: Priority,
-    /// The observation content.
-    pub content: String,
-    /// Category: event, decision, preference, error, pattern.
-    pub category: String,
-}
-
-impl Observation {
-    /// Create a new observation with auto-generated ID and current timestamp.
-    pub fn new(
-        priority: Priority,
-        category: impl Into<String>,
-        content: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: gen_hex_id(),
-            timestamp: Utc::now().to_rfc3339(),
-            priority,
-            category: category.into(),
-            content: content.into(),
-        }
-    }
-}
-
-/// A durable reflection synthesized by the Reflector worker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Reflection {
-    /// 12-char hex ID.
-    pub id: String,
-    /// ISO 8601 timestamp.
-    pub timestamp: String,
-    /// The reflection content — a stable fact, pattern, or constraint.
-    pub content: String,
-    /// Source observation IDs that led to this reflection.
-    pub source_ids: Vec<String>,
-}
-
-impl Reflection {
-    /// Create a new reflection with auto-generated ID and current timestamp.
-    pub fn new(content: impl Into<String>, source_ids: Vec<String>) -> Self {
-        Self {
-            id: gen_hex_id(),
-            timestamp: Utc::now().to_rfc3339(),
-            content: content.into(),
-            source_ids,
-        }
-    }
-}
+use luwu_core::memory_backend::{Observation, Priority, Reflection};
 
 // ---- Worker Prompts ----
 
