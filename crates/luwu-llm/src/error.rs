@@ -35,8 +35,25 @@ pub enum LlmError {
 }
 
 impl From<LlmError> for luwu_core::LuwuError {
+    /// Convert `LlmError` into `LuwuError`, preserving structured
+    /// variant information so HTTP handlers can map to the right
+    /// status code instead of dumping everything into 500.
+    ///
+    /// Mapping:
+    /// - `Auth`           → `LuwuError::LlmAuth` (→ HTTP 401)
+    /// - `Timeout`        → `LuwuError::LlmTimeout` (→ HTTP 504)
+    /// - `Status 401/403` → `LuwuError::LlmAuth` (→ HTTP 401)
+    /// - `Status 429`     → `LuwuError::Llm` (retry layer handles this)
+    /// - other            → `LuwuError::Llm`
     fn from(e: LlmError) -> Self {
-        luwu_core::LuwuError::Llm(e.to_string())
+        match e {
+            LlmError::Auth(msg) => luwu_core::LuwuError::LlmAuth(msg),
+            LlmError::Timeout => luwu_core::LuwuError::LlmTimeout,
+            LlmError::Status { status, body } if status == 401 || status == 403 => {
+                luwu_core::LuwuError::LlmAuth(truncate_body(&body, 200))
+            }
+            other => luwu_core::LuwuError::Llm(other.to_string()),
+        }
     }
 }
 
@@ -103,7 +120,36 @@ mod tests {
 
     #[test]
     fn converts_to_luwu_error() {
+        // Timeout maps to a structured `LuwuError::LlmTimeout` variant
+        // (not a generic `Llm(String)`) so HTTP handlers can return 504
+        // instead of 500.
         let err: luwu_core::LuwuError = LlmError::Timeout.into();
-        assert!(err.to_string().contains("Request timed out"));
+        assert!(
+            matches!(err, luwu_core::LuwuError::LlmTimeout),
+            "expected LlmTimeout, got {err:?}"
+        );
+        assert!(err.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn auth_maps_to_llmauth_variant() {
+        // LlmError::Auth and LlmError::Status 401/403 should preserve
+        // their identity through the LuwuError boundary so handlers can
+        // return 401 instead of 500.
+        let direct: luwu_core::LuwuError = LlmError::Auth("bad key".into()).into();
+        assert!(
+            matches!(direct, luwu_core::LuwuError::LlmAuth(_)),
+            "expected LlmAuth, got {direct:?}"
+        );
+
+        let via_status: luwu_core::LuwuError = LlmError::Status {
+            status: 401,
+            body: "unauthorized".into(),
+        }
+        .into();
+        assert!(
+            matches!(via_status, luwu_core::LuwuError::LlmAuth(_)),
+            "expected LlmAuth, got {via_status:?}"
+        );
     }
 }

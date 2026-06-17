@@ -177,6 +177,11 @@ impl TurnEngine {
         // Stuckness detection runs in lockstep with the loop. See the
         // module doc in `stuckness.rs` for the design rationale.
         let mut stuck_guard = StucknessGuard::new();
+        // Token budget soft cap. Mirrors the run_stream() logic so
+        // both code paths have the same wrap-up hint behavior.
+        let mut total_usage = crate::llm::LlmUsage::default();
+        let mut budget_warned = false;
+        let mut budget_hint = String::new();
 
         loop {
             iteration += 1;
@@ -184,11 +189,47 @@ impl TurnEngine {
             result.llm_calls += 1;
 
             // Build the LLM request from the current session state.
-            let request = self.build_request(session);
+            // `budget_hint` carries the token-budget wrap-up message once
+            // the soft cap is exceeded (so it persists across iterations).
+            let request = self.build_request(session, &budget_hint);
 
             // Call the LLM and collect its full response.
             let (assistant_content, usage) = self.call_llm(request).await?;
-            last_usage = usage;
+            last_usage = usage.clone();
+
+            // Token budget soft check. Mirrors run_stream(): at 100% of
+            // the cap, append a wrap-up hint to `budget_hint` so the
+            // next iteration's system_prompt carries it. The LLM gets
+            // to decide how to conclude.
+            if let Some(u) = &usage {
+                total_usage.prompt_tokens += u.prompt_tokens;
+                total_usage.completion_tokens += u.completion_tokens;
+                total_usage.total_tokens += u.total_tokens;
+            }
+            if !budget_warned && total_usage.total_tokens > TOKEN_BUDGET_SOFT_CAP {
+                budget_warned = true;
+                tracing::warn!(
+                    total_tokens = total_usage.total_tokens,
+                    soft_cap = TOKEN_BUDGET_SOFT_CAP,
+                    "Token budget soft cap exceeded; injecting wrap-up hint"
+                );
+                budget_hint.push_str(&format!(
+                    "\n\n⚠️ Token budget nearly exhausted ({} / {} used).\n\
+                     Wrap up your current task and provide a final summary.\n\
+                     Do NOT start new sub-tasks or call additional tools.",
+                    total_usage.total_tokens, TOKEN_BUDGET_SOFT_CAP
+                ));
+            } else if !budget_warned
+                && total_usage.total_tokens
+                    > TOKEN_BUDGET_SOFT_CAP * TOKEN_BUDGET_WARN_PCT / 100
+            {
+                tracing::warn!(
+                    total_tokens = total_usage.total_tokens,
+                    soft_cap = TOKEN_BUDGET_SOFT_CAP,
+                    pct = TOKEN_BUDGET_WARN_PCT,
+                    "Token budget warning threshold reached"
+                );
+            }
 
             // Build the assistant message.
             let assistant_msg = Message {
@@ -783,15 +824,24 @@ impl TurnEngine {
     }
 
     /// Build an [`LlmRequest`] from the current session state.
-    fn build_request(&self, session: &SessionData) -> LlmRequest {
+    ///
+    /// `extra_system_prompt` is appended to the default system prompt
+    /// (if non-empty). Used to inject transient guidance like the
+    /// token-budget wrap-up hint without permanently mutating the
+    /// engine's skill or tool registry.
+    fn build_request(&self, session: &SessionData, extra_system_prompt: &str) -> LlmRequest {
+        let mut system_prompt = system_prompt_with_tools_and_skills(
+            &self.tools.tool_names(),
+            &self.skills,
+        );
+        if !extra_system_prompt.is_empty() {
+            system_prompt.push_str(extra_system_prompt);
+        }
         LlmRequest {
             model: session.model.clone(),
             messages: session.messages.clone(),
             tools: self.tools.definitions(),
-            system_prompt: Some(system_prompt_with_tools_and_skills(
-                &self.tools.tool_names(),
-                &self.skills,
-            )),
+            system_prompt: Some(system_prompt),
             temperature: None,
             max_tokens: None,
             stop_sequences: Vec::new(),

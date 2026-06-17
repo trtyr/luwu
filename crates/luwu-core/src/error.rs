@@ -11,6 +11,18 @@ pub enum LuwuError {
     #[error("LLM provider error: {0}")]
     Llm(String),
 
+    /// LLM authentication failed (401/403-equivalent). Distinguished
+    /// from generic `Llm(String)` so handlers can map to HTTP 401.
+    #[error("LLM authentication failed: {0}")]
+    LlmAuth(String),
+
+    /// LLM request timed out. Distinguished from generic `Llm(String)`
+    /// so handlers can map to HTTP 504 (Gateway Timeout) instead of 500.
+    /// Unit variant — the cause is implied by the variant name; the
+    /// caller can log the upstream `LlmError` for full context.
+    #[error("LLM request timed out")]
+    LlmTimeout,
+
     #[error("Tool execution error: {0}")]
     Tool(String),
 

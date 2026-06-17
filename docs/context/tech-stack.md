@@ -39,7 +39,7 @@ Shared via `[workspace.dependencies]`, consumed by crates as `{ workspace = true
 |---|---|---|---|
 | `serde` | `1` | 1.0.228 | `derive` |
 | `serde_json` | `1` | 1.0.150 | — |
-| `serde_yaml` | `0.9` | 0.9.34+deprecated | — |
+| `serde_yml` | `0.0` | 0.0.12 | — |
 | `toml` | `0.8` | 0.8.23 | — |
 
 ### Async Runtime & Concurrency
@@ -146,7 +146,7 @@ These are pulled in indirectly but are significant in size or function.
 
 ## Version Constraint Notes
 
-- `serde_yaml` 0.9.34 is marked **deprecated** in its own metadata on crates.io; it remains functional.
+- `serde_yml` 0.0.12 is the active drop-in fork of the deprecated `serde_yaml` 0.9 — workspace migrated to it (commit `9f01477`).
 - Two major versions of `reqwest` coexist: **0.12.28** (direct dep) and **0.13.4** (via `kawat`).
 - Two major versions of `thiserror` coexist: **2.0.18** (direct dep) and **1.0.69** (via `redox_users`).
 - `dirs` has two versions locked: **6.0.0** (direct) and **5.0.1** (via `fff-search`).

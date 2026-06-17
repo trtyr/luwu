@@ -11,7 +11,6 @@
 //! - [`LlmProvider`] — trait for streaming LLM completions
 //! - [`Tool`] — trait for agent tools (bash, file ops, search, etc.)
 //! - [`EventBus`] — pub/sub for agent lifecycle events
-//! - [`EventBus`] — pub/sub for agent lifecycle events
 //!
 //! Everything else is a type that these traits produce or consume.
 

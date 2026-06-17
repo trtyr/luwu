@@ -5,6 +5,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::response::IntoResponse;
 use tower::ServiceExt;
 
 use luwu_server::app::{AppState, router};
@@ -406,4 +407,130 @@ async fn stats_reflects_created_session() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["sessions"]["total"], 1);
+}
+
+// ─── ApiError status code mapping ─────────────────────────────────
+//
+// The ApiError → HTTP status code mapping is the single most important
+// contract between server and clients. These tests lock in the codes
+// so a refactor can't silently regress the wire format.
+//
+// Covered:
+// - Unauthorized    → 401 (LLM auth failure: 401/403 from provider)
+// - GatewayTimeout  → 504 (LLM timeout)
+// - NotFound        → 404 (covered by handler tests above)
+// - Conflict        → 409 (covered by handler tests above)
+// - BadRequest      → 400 (covered by handler tests above)
+// - Internal        → 500 (the catch-all bucket)
+
+#[tokio::test]
+async fn api_error_unauthorized_maps_to_401() {
+    use luwu_server::error::ApiError;
+    let err = ApiError::Unauthorized("LLM authentication failed".to_string());
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn api_error_gateway_timeout_maps_to_504() {
+    use luwu_server::error::ApiError;
+    let err = ApiError::GatewayTimeout("LLM request timed out".to_string());
+    let response = err.into_response();
+    assert_eq!(
+        response.status(),
+        StatusCode::GATEWAY_TIMEOUT,
+        "LlmError::Timeout should map to 504 (Gateway Timeout), not 500"
+    );
+}
+
+#[tokio::test]
+async fn api_error_not_found_maps_to_404() {
+    use luwu_server::error::ApiError;
+    let err = ApiError::NotFound("session not found".to_string());
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn api_error_conflict_maps_to_409() {
+    use luwu_server::error::ApiError;
+    let err = ApiError::Conflict("agent already running".to_string());
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn api_error_bad_request_maps_to_400() {
+    use luwu_server::error::ApiError;
+    let err = ApiError::BadRequest("invalid provider name".to_string());
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn api_error_internal_maps_to_500() {
+    use luwu_server::error::ApiError;
+    let err = ApiError::Internal("unexpected server error".to_string());
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+// ─── LuwuError → ApiError mapping ─────────────────────────────────
+//
+// The handler chain relies on `?` automatically converting LuwuError
+// to ApiError. The LlmAuth / LlmTimeout variants must map to specific
+// HTTP codes (not the Internal 500 bucket) so clients can react
+// appropriately (refresh creds on 401, retry on 504, etc.).
+
+#[test]
+fn luwu_error_llmauth_maps_to_401() {
+    use luwu_core::LuwuError;
+    use luwu_server::error::ApiError;
+    let err: ApiError = LuwuError::LlmAuth("bad API key".to_string()).into();
+    assert!(
+        matches!(err, ApiError::Unauthorized(_)),
+        "LlmError::Auth should map to ApiError::Unauthorized, got {err:?}"
+    );
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[test]
+fn luwu_error_llmtimeout_maps_to_504() {
+    use luwu_core::LuwuError;
+    use luwu_server::error::ApiError;
+    let err: ApiError = LuwuError::LlmTimeout.into();
+    assert!(
+        matches!(err, ApiError::GatewayTimeout(_)),
+        "LlmError::Timeout should map to ApiError::GatewayTimeout, got {err:?}"
+    );
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+}
+
+#[test]
+fn luwu_error_session_maps_to_404() {
+    use luwu_core::LuwuError;
+    use luwu_server::error::ApiError;
+    let err: ApiError = LuwuError::Session("session xyz not found".to_string()).into();
+    assert!(matches!(err, ApiError::NotFound(_)));
+}
+
+#[test]
+fn luwu_error_config_maps_to_400() {
+    use luwu_core::LuwuError;
+    use luwu_server::error::ApiError;
+    let err: ApiError = LuwuError::Config("missing api_key".to_string()).into();
+    assert!(matches!(err, ApiError::BadRequest(_)));
+}
+
+#[test]
+fn luwu_error_generic_maps_to_500() {
+    use luwu_core::LuwuError;
+    use luwu_server::error::ApiError;
+    let err: ApiError = LuwuError::Llm("unknown provider error".to_string()).into();
+    assert!(
+        matches!(err, ApiError::Internal(_)),
+        "generic LuwuError::Llm should still map to Internal 500, got {err:?}"
+    );
 }
