@@ -125,6 +125,24 @@ api_key  = "sk-ant-..."
 base_url = "https://api.anthropic.com"
 model    = "claude-sonnet-4-5"
 
+
+# ── MiniMax（MiniMax）───────────────────────────────────────────
+# MiniMax 走 OpenAI 协议 + luwu 自动注入两个关键参数：
+#   1. reasoning_split=true  → 思考内容从 content 字段分离到 reasoning_content
+#   2. thinking: {type: "adaptive}  → M3+ 默认开启思考，M2.x 忽略此参数
+# 多轮 tool call 推理链：luwu 已自动保留 reasoning_content（311d7e1）
+# 缓存字段：prompt_tokens_details.cached_tokens（同 GLM，a118d74 已加）
+# 重要：MiniMax 的 reasoning_content 是累积式（非增量），luwu 在 openai.rs
+#       consume_stream 里做了 last_reasoning_len 累积→增量转换。
+# 海外：https://api.minimax.io/v1  |  国内：https://api.minimaxi.com/v1
+[providers.minimax]
+api_key  = "your-key"
+base_url = "https://api.minimax.io/v1"
+model    = "MiniMax-M3"
+# M2.x 系列不能关闭 thinking（API 强制要求），默认就开。
+# M3+ 如需禁用：自己用临时 provider 覆盖。
+# M3+ 可用模型：MiniMax-M3 (推荐)、MiniMax-M2.7、M2.5、M2.1、M2
+
 # ────────────────────────────────────────────────────────────
 # Logging
 # ────────────────────────────────────────────────────────────

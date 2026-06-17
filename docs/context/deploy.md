@@ -64,7 +64,10 @@ model = "MiniMax-M3"
 
 [providers.minimax]
 api_key = "your-api-key-here"
-base_url = "https://api.minimax.chat/v1"
+# International (global) endpoint. For users in China, use
+# base_url = "https://api.minimaxi.com/v1" instead. The old
+# `api.minimax.chat` hostname is deprecated and no longer serves traffic.
+base_url = "https://api.minimax.io/v1"
 model = "MiniMax-M3"
 
 [providers.deepseek]

@@ -19,7 +19,7 @@ use futures::StreamExt;
 use luwu_core::{ContentPart, LlmEvent, LlmProvider, LlmRequest, LlmUsage, Message, Result, Role};
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
@@ -187,6 +187,15 @@ async fn consume_stream(
     // Accumulate partial tool calls across chunks.
     let mut pending_tool_calls: HashMap<String, PartialToolCall> = HashMap::new();
     let mut received_data = false;
+    // MiniMax quirk: `reasoning_content` is CUMULATIVE (each chunk is
+    // the full reasoning so far), not incremental like OpenAI. We
+    // track the previously-seen string and emit only the new tail via
+    // `reasoning_delta_from_cumulative`. For other providers (DeepSeek,
+    // GLM, native OpenAI) reasoning_content is already incremental —
+    // the helper detects that current doesn't start_with prev and
+    // returns the full current, so no data is lost or duplicated.
+    // See: https://github.com/MiniMax-AI/MiniMax-M2/issues/95
+    let mut last_reasoning: String = String::new();
 
     loop {
         let result = match tokio::time::timeout(
@@ -241,13 +250,27 @@ async fn consume_stream(
             }
 
             // Reasoning/thinking content (GLM-4.7, DeepSeek, MiniMax).
+            // MiniMax sends CUMULATIVE reasoning per chunk — slice off the
+            // already-sent prefix to get the actual delta. Other providers
+            // send incremental, so this is a safe no-op for them.
             if let Some(reasoning) = &delta.reasoning_content
                 && !reasoning.is_empty()
             {
-                received_data = true;
-                let _ = tx
-                    .send(Ok(LlmEvent::ReasoningDelta(reasoning.clone())))
-                    .await;
+                // Reuse the same helper the unit tests exercise, so the
+                // streaming path is provably identical to the test cases.
+                // For cumulative providers (MiniMax) the helper slices
+                // off the already-sent prefix; for incremental providers
+                // (OpenAI/DeepSeek/GLM) it detects the mismatch and
+                // returns the full current chunk.
+                let new_chars = reasoning_delta_from_cumulative(&last_reasoning, reasoning);
+                last_reasoning.clear();
+                last_reasoning.push_str(reasoning);
+                if !new_chars.is_empty() {
+                    received_data = true;
+                    let _ = tx
+                        .send(Ok(LlmEvent::ReasoningDelta(new_chars.to_string())))
+                        .await;
+                }
             }
 
             // Tool call deltas.
@@ -404,6 +427,41 @@ fn build_request_body(req: &LlmRequest) -> Result<Value> {
     }
     if !req.stop_sequences.is_empty() {
         body["stop"] = serde_json::json!(req.stop_sequences);
+    }
+
+    // MiniMax provider defaults — must be set BEFORE the extra_body merge
+    // so that deliberate user overrides via req.extra_body still win.
+    //
+    // (1) `reasoning_split=true` separates the model's thinking content
+    //     from the regular `content` field. Without it, MiniMax embeds
+    //     the thinking inside `<think>...</think>` tags in `content`,
+    //     which the engine treats as plain user-facing text — a 100%
+    //     visible leakage of internal reasoning to the TUI.
+    //
+    // (2) `thinking: {type: "adaptive"}` is the documented M3 default
+    //     (thinking enabled with adaptive budget). M2.x cannot disable
+    //     thinking even if we send `disabled`, so we leave the field
+    //     absent for M2.x and MiniMax ignores our silence gracefully.
+    //
+    // Model detection is permissive (case-insensitive, matches both
+    // `MiniMax-M3`, `MiniMax-M2.7`, `abab6.5s-chat`, etc.) to cover
+    // all current and future MiniMax naming conventions.
+    if req.model.to_lowercase().contains("minimax-") || req.model.to_lowercase().contains("abab") {
+        // Value::entry() doesn't exist; operate on the underlying Map.
+        let map = body
+            .as_object_mut()
+            .expect("body is a json!() object, always a Map");
+        map.entry("reasoning_split".to_string())
+            .or_insert(Value::Bool(true));
+        // Only set thinking for M3+ (M2.x ignores it anyway, but be
+        // explicit about intent so the request body is self-documenting).
+        if req.model.to_lowercase().contains("minimax-m3")
+            || req.model.to_lowercase().contains("minimax-m")
+        {
+            map.entry("thinking".to_string()).or_insert(json!({
+                "type": "adaptive"
+            }));
+        }
     }
 
     // Merge provider-specific extras (DeepSeek's thinking toggle, etc.).
@@ -614,4 +672,130 @@ struct Usage {
 struct PromptTokensDetails {
     #[serde(default)]
     cached_tokens: u64,
+}
+
+/// Compute the incremental reasoning delta from a previous reasoning
+/// string. Returns the portion of `current` that wasn't in `prev`.
+///
+/// MiniMax sends cumulative `reasoning_content` per chunk (each chunk
+/// is the full reasoning so far); other providers (DeepSeek, GLM,
+/// native OpenAI) send incremental chunks where each chunk is a new
+/// independent piece. This function correctly handles both:
+///
+/// - **Cumulative** (MiniMax): `current` starts with `prev` (e.g.
+///   `prev="I am ", current="I am thinking"`), so we slice off the
+///   prefix and return the new tail `"thinking"`.
+///
+/// - **Incremental** (OpenAI/DeepSeek/GLM): `current` does NOT start
+///   with `prev` (the chunks are independent), so we return the full
+///   `current` unchanged. This is the safe default — the caller gets
+///   the new content in full and just sends it through.
+///
+/// Byte-safe: `prev.len()` is a byte count but since `current` starts
+/// with `prev` (when cumulative), the slice `[prev.len()..]` always
+/// lands on a UTF-8 char boundary. No `char_indices` dance needed.
+fn reasoning_delta_from_cumulative<'a>(prev: &str, current: &'a str) -> &'a str {
+    if current.is_empty() {
+        return current;
+    }
+    // Empty prev OR current doesn't extend prev → return full current.
+    // This is the incremental-provider path and the first-chunk path.
+    if prev.is_empty() || !current.starts_with(prev) {
+        return current;
+    }
+    // Cumulative: prev is a byte-aligned prefix of current, so the
+    // slice is always on a char boundary. Return the new tail.
+    &current[prev.len()..]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reasoning_delta_from_cumulative;
+
+    #[test]
+    fn empty_current_returns_empty() {
+        // Empty current → empty output regardless of prev.
+        assert_eq!(reasoning_delta_from_cumulative("", ""), "");
+        assert_eq!(reasoning_delta_from_cumulative("anything", ""), "");
+    }
+
+    #[test]
+    fn first_chunk_prev_empty_returns_full() {
+        // No previous content — emit everything.
+        assert_eq!(reasoning_delta_from_cumulative("", "hello"), "hello");
+    }
+
+    #[test]
+    fn incremental_provider_passes_through() {
+        // OpenAI/DeepSeek/GLM pattern: each chunk is a new independent
+        // piece (current does NOT start with prev). The function detects
+        // this and returns the full current unchanged.
+        let prev = "I am ";
+        let current = "thinking";
+        let delta = reasoning_delta_from_cumulative(prev, current);
+        assert_eq!(delta, "thinking", "incremental chunk must pass through");
+    }
+
+    #[test]
+    fn minmax_cumulative_emits_only_new_tail() {
+        // MiniMax pattern: each chunk is the cumulative reasoning so far
+        // (current starts with prev). The function slices off the
+        // already-sent prefix and returns the new tail.
+        let chunks = ["I am ", "I am thinking", "I am thinking about"];
+        let mut prev = "";
+        let mut deltas: Vec<&str> = Vec::new();
+        for c in &chunks {
+            let d = reasoning_delta_from_cumulative(prev, c);
+            prev = c;
+            deltas.push(d);
+        }
+        assert_eq!(deltas, vec!["I am ", "thinking", " about"]);
+    }
+
+    #[test]
+    fn chinese_text_passes_through_when_mismatch() {
+        // CJK reasoning content (GLM-4.7, DeepSeek, MiniMax thinking).
+        // Incremental path: prev and current are independent pieces.
+        let prev = "我";
+        let current = "在思考";
+        let delta = reasoning_delta_from_cumulative(prev, current);
+        assert_eq!(delta, "在思考");
+    }
+
+    #[test]
+    fn chinese_cumulative_emits_only_new_chars() {
+        // MiniMax sends cumulative Chinese reasoning.
+        let chunks = ["我在", "我在思考", "我在思考问题"];
+        let mut prev = "";
+        let deltas: Vec<String> = chunks
+            .iter()
+            .map(|c| {
+                let d = reasoning_delta_from_cumulative(prev, c);
+                prev = c;
+                d.to_string()
+            })
+            .collect();
+        assert_eq!(deltas, vec!["我在", "思考", "问题"]);
+    }
+
+    #[test]
+    fn prev_unrelated_returns_full_current() {
+        // If prev is a non-empty string that has nothing to do with
+        // current (e.g. a totally different reasoning stream after a
+        // turn boundary), the function returns the full current — the
+        // caller can decide whether to forward it.
+        let prev = "unrelated previous content from earlier turn";
+        let current = "fresh content";
+        let delta = reasoning_delta_from_cumulative(prev, current);
+        assert_eq!(delta, "fresh content");
+    }
+
+    #[test]
+    fn empty_chunk_after_data_emits_nothing() {
+        // Sometimes the API sends a delta with empty reasoning_content
+        // (e.g. content-only chunks). Make sure this is a no-op.
+        let prev = "thinking";
+        let current = "";
+        assert_eq!(reasoning_delta_from_cumulative(prev, current), "");
+    }
 }
