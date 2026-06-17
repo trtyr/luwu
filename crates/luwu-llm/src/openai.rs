@@ -300,7 +300,22 @@ async fn consume_stream(
         }
 
         // Usage info is sometimes in the final chunk.
+        // Usage info is sometimes in the final chunk. The fields here
+        // are the LLM provider's ACTUAL response data — we never estimate
+        // or fabricate these. Enable RUST_LOG=luwu_llm=debug to see the
+        // raw provider values per request.
         if let Some(usage) = chunk.usage {
+            tracing::debug!(
+                "Provider usage (raw from API response) — \
+                 prompt={} completion={} total={} | \
+                 cache: hit={:?} miss={:?} prompt_tokens_details={:?}",
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+                usage.prompt_cache_hit_tokens,
+                usage.prompt_cache_miss_tokens,
+                usage.prompt_tokens_details,
+            );
             received_data = true;
             // Cache hit/miss resolution order (precedence: flat > nested):
             // 1. DeepSeek V4 flat fields (prompt_cache_hit_tokens) — most accurate

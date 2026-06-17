@@ -216,12 +216,38 @@ impl AgentService {
                     } => {
                         cycle.add_tokens(usage.total_tokens as usize);
 
+                        // Log real provider usage (not estimates). The
+                        // cache fields come straight from the LLM's usage
+                        // object in the response — see openai.rs:313-324
+                        // for the deserialization. Run
+                        //   grep "Cache" ~/.luwu/sessions/<id>/agent.log
+                        // to verify cache data per turn.
+                        let cache_pct = if usage.prompt_tokens > 0 {
+                            (usage.prompt_cache_hit_tokens as f64
+                                / usage.prompt_tokens as f64
+                                * 100.0) as u32
+                        } else {
+                            0
+                        };
+                        let cache_source = if usage.prompt_cache_hit_tokens > 0
+                            || usage.prompt_cache_miss_tokens > 0
+                        {
+                            "from-provider"
+                        } else {
+                            "no-data-from-provider"
+                        };
                         session_log.info(&format!(
-                            "Turn done — tokens={}/{}/{} text_len={}",
+                            "Turn done — prompt={} completion={} total={} \
+                             text_len={} | Cache: hit={} miss={} ({pct}%) \
+                             [source={source}]",
                             usage.prompt_tokens,
                             usage.completion_tokens,
                             usage.total_tokens,
-                            assistant_text.len()
+                            assistant_text.len(),
+                            usage.prompt_cache_hit_tokens,
+                            usage.prompt_cache_miss_tokens,
+                            pct = cache_pct,
+                            source = cache_source,
                         ));
 
                         // Persist messages to session for multi-turn.
