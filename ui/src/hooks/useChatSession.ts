@@ -4,10 +4,20 @@
 //   committedMessages → <Static> (written to terminal once, enters scrollback)
 //   streamingMessage  → dynamic area (re-rendered every frame, always small)
 //
-// PROGRESSIVE COMMIT: When tool calls complete, their blocks are immediately
-// committed to <Static> as partial assistant messages. This keeps the dynamic
-// area bounded (~10-15 lines: current text + active tool + spinner + input).
-// When a turn completes, the remaining streaming blocks are committed.
+// PROGRESSIVE COMMIT (two triggers):
+//   1. tool_completed → commitBlocksToStatic(commitEnd) moves tool blocks
+//      to <Static> immediately
+//   2. text_delta where last text block exceeds MAX_DYNAMIC_LINES →
+//      commitTextOverflow() splits: early lines → <Static>, recent N lines
+//      stay in dynamic area. This is the CRITICAL fix for Ink's
+//      clearTerminal nuclear option — when the dynamic area exceeds
+//      terminal rows, Ink erases the whole screen and rewrites from the
+//      top, causing flicker + scroll-jump. Long text without tool calls
+//      (e.g. a 60-line explanation) previously caused this.
+//   3. done event → final commitBlocksToStatic + setStreamingMessage(null)
+//      + setPhase('ready') all batched in the same microtask, so React
+//      renders "new static + empty dynamic" atomically (no intermediate
+//      "dynamic shrinks but no new static" flash).
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
@@ -164,14 +174,19 @@ export function useChatSession(): ChatSession {
     setPhase('connecting');
     streamingRef.current = null;
     setStreamingMessage(null);
-    setCommittedMessages([sysMsg('正在创建新会话…')]);
-    setStaticKey(k => k + 1);
+    // FIX 3: Do NOT pre-clear messages + setStaticKey before createSession
+    // succeeds. The old code cleared messages, showed a placeholder
+    // "正在创建新会话…", and bumped staticKey — then if createSession
+    // failed, the user lost their old messages AND saw a double
+    // <Static> remount. Now we keep the old messages visible until the
+    // new session is confirmed, then do a SINGLE setStaticKey remount
+    // with the new system message.
     try {
       const newId = await createSession();
       setSessionId(newId);
       setPhase('ready');
       setCommittedMessages([sysMsg(`新会话 ${newId.slice(0, 8)}… 已创建 · 开始对话吧`)]);
-      setStaticKey(k => k + 1);
+      setStaticKey(k => k + 1);  // SINGLE remount, only on success
     } catch (e) {
       setPhase('error');
       setError(`创建新会话失败: ${String(e)}`);
@@ -183,35 +198,34 @@ export function useChatSession(): ChatSession {
 
     // Commit user message immediately to <Static>
     const userMsg: DisplayMessage = {
-      id: uid(), role: 'user', content: text.trim(), timestamp: Date.now(),
+      id: uid(),
+      role: 'user',
+      content: text,
+      timestamp: Date.now(),
     };
     setCommittedMessages(prev => [...prev, userMsg]);
 
-    // Start streaming assistant message in dynamic area
-    const assistantId = uid();
-    const assistantMsg: DisplayMessage = {
-      id: assistantId, role: 'assistant', content: '', blocks: [], timestamp: Date.now(),
-    };
-    streamingRef.current = assistantMsg;
-    setStreamingMessage(assistantMsg);
-
-    setPhase('thinking');
-    setIteration(0);
-    setSpinnerVerb(undefined);
-    lastActivityRef.current = Date.now();
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    // ── Stream state ──
+    // Fresh state for this turn
     const blocks: AssistantBlock[] = [];
     let currentText = '';
     let accReasoning = '';
     const toolIndexMap = new Map<string, number>();
-
-    // ── Progressive commit: completed blocks go to <Static> immediately ──
-    // This keeps the dynamic area small even for long responses.
     let committedBlockCount = 0;
+    let receivedDone = false;  // FIX 2: track whether 'done' event fired
+
+    // Create streaming assistant message
+    const assistantMsg: DisplayMessage = {
+      id: uid(),
+      role: 'assistant',
+      content: '',
+      blocks: [],
+      timestamp: Date.now(),
+    };
+    streamingRef.current = assistantMsg;
+    setStreamingMessage(assistantMsg);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     /** Commit blocks[0..endIdx] to <Static> as a partial assistant message */
     const commitBlocksToStatic = (endIdx: number) => {
@@ -235,6 +249,64 @@ export function useChatSession(): ChatSession {
       committedBlockCount = endIdx;
     };
 
+    // FIX 1: Progressive text overflow commit.
+    // ────────────────────────────────────────────────────────────────────
+    // When a text block grows beyond MAX_DYNAMIC_LINES (or has too many
+    // characters for one line), split it: the early part is committed to
+    // <Static> (enters scrollback permanently), the recent MAX_DYNAMIC_LINES
+    // stay in the dynamic area for continued streaming.
+    //
+    // This is the CRITICAL fix for Ink's clearTerminal nuclear option:
+    // when the dynamic area exceeds terminal rows, Ink erases the whole
+    // screen and rewrites from the top, causing flicker + scroll-jump.
+    // Long AI explanations (e.g. 60 lines of Markdown) without any tool
+    // calls previously caused this. Now the dynamic area stays bounded
+    // at MAX_DYNAMIC_LINES regardless of total response length.
+    // ────────────────────────────────────────────────────────────────────
+    const MAX_DYNAMIC_LINES = 15;
+    const MAX_DYNAMIC_CHARS = 2000;
+    const commitTextOverflow = () => {
+      // Find the last text block in the uncommitted region
+      let lastTextIdx = -1;
+      for (let i = blocks.length - 1; i >= committedBlockCount; i--) {
+        if (blocks[i].type === 'text') {
+          lastTextIdx = i;
+          break;
+        }
+      }
+      if (lastTextIdx < 0) return;
+
+      const lastText = blocks[lastTextIdx] as { type: 'text'; text: string };
+      const lines = lastText.text.split('\n');
+
+      if (lines.length <= MAX_DYNAMIC_LINES && lastText.text.length <= MAX_DYNAMIC_CHARS) {
+        return; // not overflow yet
+      }
+
+      // Split: keep last MAX_DYNAMIC_LINES lines in dynamic area,
+      // commit everything before that to <Static>.
+      const splitAt = Math.max(0, lines.length - MAX_DYNAMIC_LINES);
+      const earlyLines = lines.slice(0, splitAt);
+      const recentLines = lines.slice(splitAt);
+
+      if (earlyLines.length === 0) return; // nothing to commit
+
+      const earlyText = earlyLines.join('\n');
+      const recentText = recentLines.join('\n');
+
+      // Replace the last text block with the recent part
+      blocks[lastTextIdx] = { type: 'text', text: recentText };
+
+      // Insert a new block for the early part BEFORE the recent part
+      const earlyBlock: AssistantBlock = { type: 'text', text: earlyText };
+      blocks.splice(lastTextIdx, 0, earlyBlock);
+
+      // Commit blocks[committedBlockCount..lastTextIdx+1] to <Static>.
+      // After this, committedBlockCount = lastTextIdx + 1, and the
+      // uncommitted region starts at lastTextIdx + 1 (the recent text).
+      commitBlocksToStatic(lastTextIdx + 1);
+    };
+
     // ── Throttle: batch React state updates to prevent flickering ──
     const SYNC_MS = 60;
     let lastSyncTime = 0;
@@ -248,6 +320,9 @@ export function useChatSession(): ChatSession {
       } else {
         blocks.push({ type: 'text', text: currentText });
       }
+      // FIX 1: After appending, check if the text block is too long.
+      // If so, split it and commit the early part to <Static>.
+      commitTextOverflow();
     };
 
     // Update streamingRef + streamingMessage — only show blocks AFTER committed
@@ -306,62 +381,60 @@ export function useChatSession(): ChatSession {
 
           case 'reasoning_delta':
             accReasoning += ev.delta || '';
-            throttledSync();
+            syncToReact();
             break;
 
           case 'tool_call': {
+            // Flush any accumulated text before starting a new tool
             flushText();
             currentText = '';
-            setSpinnerVerb(ev.name || ev.tool_name || 'tool');
-            const name = ev.name || ev.tool_name || 'unknown';
-            const args = ev.arguments
-              ? (typeof ev.arguments === 'string' ? ev.arguments : JSON.stringify(ev.arguments))
-              : '';
-            const toolInfo: ToolCallInfo = { name, args, status: 'running' };
-            blocks.push({ type: 'tool', tool: toolInfo });
-            toolIndexMap.set(name, blocks.length - 1);
-            immediateSync();
+            const tc = ev.tool_call;
+            const toolBlock: AssistantBlock = {
+              type: 'tool',
+              id: tc.id,
+              name: tc.name,
+              arguments: tc.arguments,
+              status: 'running',
+            };
+            blocks.push(toolBlock);
+            toolIndexMap.set(tc.name + ':' + tc.id, blocks.length - 1);
+            syncToReact();
             break;
           }
 
           case 'tool_completed': {
-            const name = ev.name || ev.tool_name || '';
-            const rawResult = ev.result || ev.output || '';
-            const lower = rawResult.toLowerCase();
-            const isErr = lower.includes('error')
-              || lower.includes('panicked')
-              || lower.includes('no such file')
-              || lower.includes('not found')
-              || lower.includes('failed')
-              || lower.includes('permission denied');
-            const idx = toolIndexMap.get(name);
-            if (idx !== undefined && blocks[idx]?.type === 'tool') {
-              blocks[idx].tool.result = rawResult;
-              blocks[idx].tool.status = isErr ? 'error' : 'done';
-            } else {
-              flushText();
-              currentText = '';
-              blocks.push({
-                type: 'tool',
-                tool: {
-                  name, args: '', result: rawResult,
-                  status: (isErr ? 'error' : 'done') as 'error' | 'done',
-                },
-              });
-              toolIndexMap.set(name, blocks.length - 1);
+            // Update the matching tool block with the result
+            const tcId = ev.tool_call_id;
+            const idx = toolIndexMap.get(tcId || '');
+            if (idx !== undefined && blocks[idx] && blocks[idx].type === 'tool') {
+              const toolBlock = blocks[idx] as AssistantBlock & { type: 'tool' };
+              // FIX 3 (review): Detect tool errors from ev.error flag
+              // and result keyword matching — set status='error' for
+              // red coloring instead of always 'done' green.
+              const resultStr = ev.result || '';
+              const isError = ev.error === true
+                || /\b(error|panicked|no such file|not found|failed|permission denied)\b/i.test(resultStr);
+              toolBlock.result = resultStr;
+              toolBlock.status = isError ? 'error' : 'done';
             }
-
-            // ── Progressive commit: this tool is done, commit everything up to it ──
-            const commitEnd = (idx !== undefined ? idx + 1 : blocks.length);
-            commitBlocksToStatic(commitEnd);
-            immediateSync();
+            // Commit blocks[0..idx+1] to <Static> as a partial assistant
+            // message — the tool call + its result enter scrollback
+            // immediately, so the dynamic area stays small.
+            const commitEnd = (idx !== undefined ? idx : blocks.length - 1) + 1;
+            if (commitEnd > committedBlockCount) {
+              commitBlocksToStatic(commitEnd);
+            }
+            syncToReact();
             break;
           }
 
           case 'iteration_end':
-            setIteration(ev.iteration || 0);
-            if (ev.usage?.prompt_tokens) updateContext(ev.usage.prompt_tokens, model);
-            if (ev.usage?.prompt_cache_hit_tokens) setCacheHit(ev.usage.prompt_cache_hit_tokens);
+            setIteration(ev.iteration);
+            // Update cache hit from this iteration's usage
+            if (ev.usage?.prompt_cache_hit_tokens) {
+              setCacheHit(ev.usage.prompt_cache_hit_tokens);
+            }
+            // Accumulate cost from this iteration's usage
             if (ev.usage) {
               const est = estimateCost(ev.usage, model);
               setCostTotal(prev => prev + est.effective);
@@ -370,7 +443,32 @@ export function useChatSession(): ChatSession {
             break;
 
           case 'done':
-            immediateSync();
+            // FIX 2: Batch all final state updates in the done handler.
+            // ──────────────────────────────────────────────────────
+            // Previously the cleanup (commitBlocksToStatic + setStreaming-
+            // Message(null) + setPhase('ready')) was in the `finally`
+            // block, which runs in a SEPARATE microtask from this
+            // event handler. That caused 2 separate renders:
+            //   1. done event → immediateSync() (dynamic area still has
+            //      streamingMessage, dynamic area still high)
+            //   2. finally   → clear streaming + commit (dynamic area
+            //      suddenly drops, <Static> remounts)
+            // Between these, the user saw a flicker / scroll-jump.
+            //
+            // By doing all cleanup HERE, React 18 batching puts every
+            // setState into ONE render: the user sees the committed
+            // message in scrollback AND an empty dynamic area
+            // simultaneously. No flicker, no jump.
+            // ──────────────────────────────────────────────────────
+            receivedDone = true;
+            // Clear the throttledSync timer first so a late text_delta
+            // (network reordering) can't fire syncToReact 60ms after we
+            // clear streamingMessage and resurrect the same content.
+            if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
+            // Flush any remaining text into the last block
+            flushText();
+            currentText = '';
+            // Update context/cache from final usage
             if (ev.usage?.prompt_tokens) updateContext(ev.usage.prompt_tokens, model);
             if (ev.usage?.prompt_cache_hit_tokens) setCacheHit(ev.usage.prompt_cache_hit_tokens);
             // NOTE: costTotal/costSaved are NOT accumulated here. The
@@ -383,6 +481,20 @@ export function useChatSession(): ChatSession {
             // 3-iteration turn: 3*iteration_end + 1*done = 4x the real
             // cost). Context/cache fields are fine to overwrite since
             // they're "latest value", not "cumulative".
+            // ──────────────────────────────────────────────────────
+            // ATOMIC FINAL CLEANUP — all in one React render:
+            //   1. Commit remaining blocks to <Static> (enters scrollback)
+            //   2. Clear streamingMessage (dynamic area becomes empty)
+            //   3. Set phase to ready (spinner disappears)
+            //   4. Clear abortRef
+            // ──────────────────────────────────────────────────────
+            if (blocks.length > committedBlockCount) {
+              commitBlocksToStatic(blocks.length);
+            }
+            streamingRef.current = null;
+            setStreamingMessage(null);
+            abortRef.current = null;
+            setPhase('ready');
             break;
 
           case 'cancelled':
@@ -397,7 +509,7 @@ export function useChatSession(): ChatSession {
         }
       }, controller.signal);
     } catch (e) {
-      if (syncTimer) clearTimeout(syncTimer);
+      if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
       if ((e as Error).name !== 'AbortError') {
         currentText += `\n⚠ ${String(e)}`;
         flushText();
@@ -406,26 +518,22 @@ export function useChatSession(): ChatSession {
         syncToReact();
       }
     } finally {
-      // CRITICAL ORDER: Clear the throttledSync timer FIRST so a late
-      // text_delta (network reordering) can't fire syncToReact 60ms after
-      // we've cleared streamingMessage and resurrect the same content as a
-      // second committed message.
+      // FIX 2: Safety net for error/cancel paths where 'done' was
+      // NEVER received. The normal path handles cleanup in the
+      // 'done' handler for batched atomic state updates. This branch
+      // only runs when the SSE stream ended abnormally (network error,
+      // AbortError from /cancel command, etc.) and we still need to
+      // commit whatever blocks we have and clear the dynamic area.
       if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
-      // CRITICAL ORDER: Clear streamingMessage BEFORE commitBlocksToStatic.
-      // If commit goes first and React 17 (or any non-batching renderer)
-      // re-renders, the user would see the same content from BOTH the
-      // committed message (in <Static>) AND the still-populated
-      // streamingMessage (in dynamic area) - a brief but ugly double
-      // render. Clearing streaming first guarantees by the time the
-      // committed message hits <Static>, the dynamic area is empty.
-      streamingRef.current = null;
-      setStreamingMessage(null);
-      // Commit remaining streaming blocks to <Static>
-      if (blocks.length > committedBlockCount) {
-        commitBlocksToStatic(blocks.length);
+      if (!receivedDone) {
+        if (blocks.length > committedBlockCount) {
+          commitBlocksToStatic(blocks.length);
+        }
+        streamingRef.current = null;
+        setStreamingMessage(null);
+        abortRef.current = null;
+        setPhase('ready');
       }
-      abortRef.current = null;
-      setPhase('ready');
     }
   }, [sessionId, model, updateContext]);
 
