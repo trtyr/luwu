@@ -127,3 +127,95 @@ pub trait LlmProvider: Send + Sync {
         Ok(result)
     }
 }
+
+/// Cost ratio of cache-hit tokens to cache-miss tokens for the given
+/// model. This is used to compute "effective tokens" for budget checks:
+///
+/// `effective = prompt_cache_miss + (prompt_cache_hit * ratio) + completion`
+///
+/// Lower = cheaper cache. Returns 0.0 for full cost (i.e. treat as miss).
+///
+/// Per-provider ratios (as of 2026):
+/// - DeepSeek V4: 0.02 (1/50 — V4-Flash hit $0.0028 vs miss $0.14)
+/// - GLM/智谱: 0.25 (1/4 — GLM Coding Plan ~4x cheaper on cache hit)
+/// - MiniMax: 0.2 (1/5 — MiniMax M-series cache discount)
+/// - Default: 0.1 (conservative, native OpenAI/Anthropic prompt caching
+///   is ~10x cheaper than full price)
+pub fn cache_ratio_for_model(model: &str) -> f64 {
+    let m = model.to_lowercase();
+    if m.contains("deepseek") {
+        0.02 // 1/50
+    } else if m.contains("glm") || m.contains("z-") {
+        0.25 // 1/4
+    } else if m.contains("minimax") || m.contains("abab") {
+        0.2 // 1/5
+    } else {
+        0.1 // default conservative
+    }
+}
+
+/// Compute "effective tokens" for budget accounting. Cache-hit tokens
+/// are weighted by `cache_ratio_for_model` so a long task with high
+/// cache hit rate doesn't get prematurely capped.
+///
+/// Example: a DeepSeek task with 400k cache-hit, 100k cache-miss, and
+/// 50k completion tokens (550k raw total). Effective is
+/// `100k + 400k*0.02 + 50k = 158k` — well under the 500k soft cap.
+pub fn effective_tokens_for(usage: &LlmUsage, model: &str) -> u64 {
+    let ratio = cache_ratio_for_model(model);
+    let hit_effective = (usage.prompt_cache_hit_tokens as f64 * ratio) as u64;
+    usage
+        .prompt_cache_miss_tokens
+        .saturating_add(hit_effective)
+        .saturating_add(usage.completion_tokens)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_ratio_known_providers() {
+        assert!((cache_ratio_for_model("deepseek-v4-flash") - 0.02).abs() < 1e-9);
+        assert!((cache_ratio_for_model("DeepSeek-V4-Pro") - 0.02).abs() < 1e-9);
+        assert!((cache_ratio_for_model("glm-4.7") - 0.25).abs() < 1e-9);
+        assert!((cache_ratio_for_model("GLM-5") - 0.25).abs() < 1e-9);
+        assert!((cache_ratio_for_model("z-ai-model") - 0.25).abs() < 1e-9);
+        assert!((cache_ratio_for_model("MiniMax-M3") - 0.2).abs() < 1e-9);
+        assert!((cache_ratio_for_model("abab-6") - 0.2).abs() < 1e-9);
+        // Unknown model falls back to conservative 0.1
+        assert!((cache_ratio_for_model("gpt-4o") - 0.1).abs() < 1e-9);
+        assert!((cache_ratio_for_model("claude-sonnet-4") - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effective_tokens_weights_cache_hits() {
+        // DeepSeek: 100k miss + 400k hit + 50k completion
+        // = 100k + 400k*0.02 + 50k = 158k
+        let usage = LlmUsage {
+            prompt_tokens: 500_000,
+            completion_tokens: 50_000,
+            total_tokens: 550_000,
+            prompt_cache_hit_tokens: 400_000,
+            prompt_cache_miss_tokens: 100_000,
+        };
+        let eff = effective_tokens_for(&usage, "deepseek-v4-flash");
+        assert_eq!(eff, 158_000);
+
+        // GLM: 100k miss + 400k hit + 50k completion
+        // = 100k + 400k*0.25 + 50k = 250k
+        let eff = effective_tokens_for(&usage, "glm-4.7");
+        assert_eq!(eff, 250_000);
+
+        // No cache hit at all: effective = miss + completion
+        let no_cache = LlmUsage {
+            prompt_tokens: 200_000,
+            completion_tokens: 50_000,
+            total_tokens: 250_000,
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 200_000,
+        };
+        let eff = effective_tokens_for(&no_cache, "deepseek-v4-flash");
+        assert_eq!(eff, 250_000);
+    }
+}

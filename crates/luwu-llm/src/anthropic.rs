@@ -441,6 +441,27 @@ fn build_request_body(req: &LlmRequest) -> Result<Value> {
         body["stop_sequences"] = serde_json::json!(req.stop_sequences);
     }
 
+    // MiniMax via Anthropic protocol: thinking defaults to OFF in MiniMax's
+    // Anthropic-compatible endpoint (different from native Anthropic API
+    // which defaults to ON). Without this, the model produces no
+    // reasoning_content — TUI's ReasoningBlock will be empty and the model
+    // appears to "skip thinking" entirely. We must explicitly enable it.
+    //
+    // Detection is permissive (case-insensitive, matches `MiniMax-M3`,
+    // `MiniMax-M2.7`, `abab-6`, etc.) to cover all MiniMax naming
+    // conventions. We do NOT enable thinking for real Anthropic API
+    // models (claude-*), where the user opts in explicitly via
+    // `extra_body` if desired.
+    //
+    // budget_tokens: 8192 is a reasonable default — enough for most
+    // agentic reasoning without blowing up the context window.
+    if req.model.to_lowercase().contains("minimax-") || req.model.to_lowercase().contains("abab") {
+        body["thinking"] = serde_json::json!({
+            "type": "enabled",
+            "budget_tokens": 8192
+        });
+    }
+
     Ok(body)
 }
 

@@ -196,38 +196,50 @@ impl TurnEngine {
             // `budget_hint` carries the token-budget wrap-up message once
             // the soft cap is exceeded (so it persists across iterations).
             let request = self.build_request(session, &budget_hint);
+            // Capture the model name for the budget check below — we need
+            // it to look up the per-provider cache hit/miss cost ratio.
+            let model = request.model.clone();
 
             // Call the LLM and collect its full response.
             let (assistant_content, usage) = self.call_llm(request).await?;
             last_usage = usage.clone();
 
             // Token budget soft check. Mirrors run_stream(): at 100% of
-            // the cap, append a wrap-up hint to `budget_hint` so the
-            // next iteration's system_prompt carries it. The LLM gets
-            // to decide how to conclude.
+            // the soft cap (measured in EFFECTIVE tokens — cache hits
+            // weighted by per-provider discount ratio), append a wrap-up
+            // hint to `budget_hint` so the next iteration's system_prompt
+            // carries it. The LLM gets to decide how to conclude.
             if let Some(u) = &usage {
                 total_usage.prompt_tokens += u.prompt_tokens;
                 total_usage.completion_tokens += u.completion_tokens;
                 total_usage.total_tokens += u.total_tokens;
+                total_usage.prompt_cache_hit_tokens += u.prompt_cache_hit_tokens;
+                total_usage.prompt_cache_miss_tokens += u.prompt_cache_miss_tokens;
             }
-            if !budget_warned && total_usage.total_tokens > TOKEN_BUDGET_SOFT_CAP {
+            let effective = crate::llm::effective_tokens_for(&total_usage, &model);
+            if !budget_warned && effective > TOKEN_BUDGET_SOFT_CAP {
                 budget_warned = true;
                 tracing::warn!(
-                    total_tokens = total_usage.total_tokens,
+                    effective_tokens = effective,
+                    raw_tokens = total_usage.total_tokens,
+                    cache_hit = total_usage.prompt_cache_hit_tokens,
+                    cache_miss = total_usage.prompt_cache_miss_tokens,
+                    cache_ratio = crate::llm::cache_ratio_for_model(&model),
                     soft_cap = TOKEN_BUDGET_SOFT_CAP,
                     "Token budget soft cap exceeded; injecting wrap-up hint"
                 );
                 budget_hint.push_str(&format!(
-                    "\n\n⚠️ Token budget nearly exhausted ({} / {} used).\n\
+                    "\n\n⚠️ Token budget nearly exhausted ({} / {} effective, {} raw used).\n\
                      Wrap up your current task and provide a final summary.\n\
                      Do NOT start new sub-tasks or call additional tools.",
-                    total_usage.total_tokens, TOKEN_BUDGET_SOFT_CAP
+                    effective, TOKEN_BUDGET_SOFT_CAP, total_usage.total_tokens
                 ));
             } else if !budget_warned
-                && total_usage.total_tokens > TOKEN_BUDGET_SOFT_CAP * TOKEN_BUDGET_WARN_PCT / 100
+                && effective > TOKEN_BUDGET_SOFT_CAP * TOKEN_BUDGET_WARN_PCT / 100
             {
                 tracing::warn!(
-                    total_tokens = total_usage.total_tokens,
+                    effective_tokens = effective,
+                    raw_tokens = total_usage.total_tokens,
                     soft_cap = TOKEN_BUDGET_SOFT_CAP,
                     pct = TOKEN_BUDGET_WARN_PCT,
                     "Token budget warning threshold reached"
@@ -467,6 +479,10 @@ impl TurnEngine {
                     stop_sequences: Vec::new(),
                     extra_body: None,
                 };
+                // Capture the model name before the stream consumes the
+                // request — the budget check below needs it to look up
+                // the per-provider cache hit/miss cost ratio.
+                let model = request.model.clone();
 
                 let mut stream_rx = match provider.stream(request).await {
                     Ok(rx) => rx,
@@ -553,24 +569,32 @@ impl TurnEngine {
                             total_usage.prompt_tokens += usage.prompt_tokens;
                             total_usage.completion_tokens += usage.completion_tokens;
                             total_usage.total_tokens += usage.total_tokens;
+                            total_usage.prompt_cache_hit_tokens += usage.prompt_cache_hit_tokens;
+                            total_usage.prompt_cache_miss_tokens += usage.prompt_cache_miss_tokens;
                             last_usage = usage.clone();
 
                             // Token budget soft check. At 80% of the soft
-                            // cap, log a warn only. At 100%, emit
-                            // `TurnEvent::BudgetWarning` and inject a
-                            // system message asking the LLM to wrap up.
-                            // The LLM gets to decide how to conclude —
+                            // cap (measured in EFFECTIVE tokens — cache hits
+                            // weighted by per-provider discount ratio), log a
+                            // warn only. At 100%, emit `TurnEvent::BudgetWarning`
+                            // and inject a system message asking the LLM to
+                            // wrap up. The LLM gets to decide how to conclude —
                             // this is not a hard stop.
-                            if !budget_warned && total_usage.total_tokens > TOKEN_BUDGET_SOFT_CAP {
+                            let effective = crate::llm::effective_tokens_for(&total_usage, &model);
+                            if !budget_warned && effective > TOKEN_BUDGET_SOFT_CAP {
                                 budget_warned = true;
                                 tracing::warn!(
-                                    total_tokens = total_usage.total_tokens,
+                                    effective_tokens = effective,
+                                    raw_tokens = total_usage.total_tokens,
+                                    cache_hit = total_usage.prompt_cache_hit_tokens,
+                                    cache_miss = total_usage.prompt_cache_miss_tokens,
+                                    cache_ratio = crate::llm::cache_ratio_for_model(&model),
                                     soft_cap = TOKEN_BUDGET_SOFT_CAP,
                                     "Token budget soft cap exceeded; injecting wrap-up hint"
                                 );
                                 let _ = tx
                                     .send(TurnEvent::BudgetWarning {
-                                        used_tokens: total_usage.total_tokens,
+                                        used_tokens: effective,
                                         soft_cap: TOKEN_BUDGET_SOFT_CAP,
                                     })
                                     .await;
@@ -583,17 +607,17 @@ impl TurnEngine {
                                 // the only correct place for system-level
                                 // guidance. Same fix as the Skill injection.
                                 system_prompt.push_str(&format!(
-                                    "\n\n⚠️ Token budget nearly exhausted ({} / {} used).\n\
+                                    "\n\n⚠️ Token budget nearly exhausted ({} / {} effective, {} raw used).\n\
                                      Wrap up your current task and provide a final summary.\n\
                                      Do NOT start new sub-tasks or call additional tools.",
-                                    total_usage.total_tokens, TOKEN_BUDGET_SOFT_CAP
+                                    effective, TOKEN_BUDGET_SOFT_CAP, total_usage.total_tokens
                                 ));
                             } else if !budget_warned
-                                && total_usage.total_tokens
-                                    > TOKEN_BUDGET_SOFT_CAP * TOKEN_BUDGET_WARN_PCT / 100
+                                && effective > TOKEN_BUDGET_SOFT_CAP * TOKEN_BUDGET_WARN_PCT / 100
                             {
                                 tracing::warn!(
-                                    total_tokens = total_usage.total_tokens,
+                                    effective_tokens = effective,
+                                    raw_tokens = total_usage.total_tokens,
                                     soft_cap = TOKEN_BUDGET_SOFT_CAP,
                                     pct = TOKEN_BUDGET_WARN_PCT,
                                     "Token budget warning threshold reached"

@@ -251,7 +251,9 @@ async fn budget_injects_wrap_up_hint_after_soft_cap() {
         completion_tokens: 1000,
         total_tokens: 601_000,
         prompt_cache_hit_tokens: 0,
-        prompt_cache_miss_tokens: 0,
+        // miss_tokens = 600_000 → effective = 600_000 + 0*ratio + 1000
+        // > 500_000 soft cap, triggers the wrap-up hint.
+        prompt_cache_miss_tokens: 600_000,
     };
     let response_sequences = vec![
         // First call: high usage → should trigger budget warning +

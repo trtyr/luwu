@@ -464,6 +464,28 @@ fn build_request_body(req: &LlmRequest) -> Result<Value> {
         }
     }
 
+    // GLM provider defaults — must be set BEFORE the extra_body merge
+    // so that deliberate user overrides via req.extra_body still win.
+    //
+    // `clear_thinking: false` tells GLM Coding Plan to PRESERVE thinking
+    // content across turns instead of clearing it. This is the single
+    // biggest cost-saver on GLM Coding Plan: with clear=true (the
+    // default), every new turn starts with a cold prompt cache because
+    // the thinking content shifts and invalidates the prefix. With
+    // clear=false, the thinking content carries forward and the cache
+    // hit rate can climb to 50%+ on long agentic tasks.
+    //
+    // Model detection is permissive (case-insensitive, matches GLM-4.7,
+    // glm-5, Z.AI international endpoints like z-ai/glm-4.6, etc.) to
+    // cover all current and future GLM naming conventions.
+    if req.model.to_lowercase().contains("glm") || req.model.to_lowercase().contains("z-") {
+        let map = body
+            .as_object_mut()
+            .expect("body is a json!() object, always a Map");
+        map.entry("clear_thinking".to_string())
+            .or_insert(Value::Bool(false));
+    }
+
     // Merge provider-specific extras (DeepSeek's thinking toggle, etc.).
     // Keys in `req.extra_body` override anything we set above, which is
     // the right behavior for deliberate overrides like forcing thinking off.
