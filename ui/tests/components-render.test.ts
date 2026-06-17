@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { COMMANDS, LAYOUT, truncateText } from '../src/core/constants.ts';
+import { COMMANDS, LAYOUT, truncateText, computeCachePercent } from '../src/core/constants.ts';
 import { canTransition, isBusy, showSpinner } from '../src/core/state.ts';
 import type { Phase } from '../src/core/types.ts';
 
@@ -53,4 +53,59 @@ describe('canTransition self-transitions', () => {
   for (const p of phases) {
     test(`${p}→${p} is false`, () => { expect(canTransition(p, p)).toBe(false); });
   }
+});
+
+describe('computeCachePercent', () => {
+  // First-turn / no-data scenarios — badge should NOT show (returns 0).
+  test('first turn: 0 hits, real context → 0%', () => {
+    expect(computeCachePercent(0, 1000)).toBe(0);
+  });
+  test('undefined cacheHit → 0%', () => {
+    expect(computeCachePercent(undefined, 1000)).toBe(0);
+  });
+  test('undefined contextTokens → 0%', () => {
+    expect(computeCachePercent(500, undefined)).toBe(0);
+  });
+  test('zero contextTokens → 0%', () => {
+    expect(computeCachePercent(500, 0)).toBe(0);
+  });
+  test('negative cacheHit → 0%', () => {
+    expect(computeCachePercent(-100, 1000)).toBe(0);
+  });
+  test('both undefined → 0%', () => {
+    expect(computeCachePercent(undefined, undefined)).toBe(0);
+  });
+
+  // Real GLM / DeepSeek scenarios — badge SHOULD show.
+  test('GLM mid-conversation: 50% cached → 50%', () => {
+    expect(computeCachePercent(500, 1000)).toBe(50);
+  });
+  test('heavy prefix match: 75% cached → 75%', () => {
+    expect(computeCachePercent(750, 1000)).toBe(75);
+  });
+  test('everything cached: 100% → 100%', () => {
+    expect(computeCachePercent(1000, 1000)).toBe(100);
+  });
+  test('small cache: 1% → 1%', () => {
+    expect(computeCachePercent(10, 1000)).toBe(1);
+  });
+  test('rounds 33.7% up to 34%', () => {
+    expect(computeCachePercent(337, 1000)).toBe(34);
+  });
+  test('rounds 33.4% down to 33%', () => {
+    expect(computeCachePercent(334, 1000)).toBe(33);
+  });
+
+  // Defensive — should never show > 100% even with weird upstream data.
+  test('cacheHit > contextTokens (defensive) → capped at 100%', () => {
+    expect(computeCachePercent(1500, 1000)).toBe(100);
+  });
+
+  // Realistic GLM-4.7 context sizes (128K) — confirms math holds at scale.
+  test('GLM-4.7 128K context with 64K cached → 50%', () => {
+    expect(computeCachePercent(65536, 131072)).toBe(50);
+  });
+  test('GLM-4.7 128K context with 128K cached → 100%', () => {
+    expect(computeCachePercent(131072, 131072)).toBe(100);
+  });
 });

@@ -81,3 +81,28 @@ export function contextWindowFor(model: string): number {
   // ── Default ──
   return 128_000;
 }
+
+/**
+ * Compute the cache-hit percentage for the status bar badge.
+ * Returns 0 if no cache data is available, capped at 100.
+ *
+ * Edge cases:
+ * - cacheHit is 0 / undefined     → 0 (no badge shown — no hits yet)
+ * - contextTokens is 0 / undefined → 0 (no badge — can't compute %)
+ * - cacheHit > contextTokens       → 100 (impossible in practice, but
+ *   we cap defensively so the UI never shows > 100%)
+ * - negative inputs                → 0 (defensive)
+ *
+ * The "⚡ XX% cached" badge in StatusLine calls this to decide whether
+ * to show. Users only see the badge once they have real cache activity
+ * (typically from the 2nd turn onward when prefix caching starts
+ * matching previous prompts — first turn is always 0%).
+ */
+export function computeCachePercent(
+  cacheHit: number | undefined,
+  contextTokens: number | undefined,
+): number {
+  if (!cacheHit || !contextTokens || contextTokens <= 0) return 0;
+  if (cacheHit < 0) return 0;
+  return Math.min(100, Math.round((cacheHit / contextTokens) * 100));
+}
