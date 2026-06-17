@@ -315,7 +315,6 @@ enum MatchTier {
     Resilient,
 }
 
-#[allow(clippy::too_many_arguments)]
 // ---------------------------------------------------------------------------
 // Replacement — bundles the 8 parameters that apply_replacement used to take
 // (fixes clippy::too_many_arguments)
@@ -345,6 +344,7 @@ struct Replacement<'a> {
 }
 
 impl<'a> Replacement<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         content: &'a str,
         old_text: &'a str,

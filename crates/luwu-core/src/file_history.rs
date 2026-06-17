@@ -482,7 +482,7 @@ impl FileHistory {
     }
 
     fn persist(&self) -> io::Result<()> {
-        let json = serde_json::to_string_pretty(&self.state).map_err(|e| io::Error::other(e))?;
+        let json = serde_json::to_string_pretty(&self.state).map_err(io::Error::other)?;
         fs::write(&self.state_path, json)?;
         Ok(())
     }

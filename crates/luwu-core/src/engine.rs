@@ -173,7 +173,11 @@ impl TurnEngine {
 
         // The agentic loop.
         let mut iteration = 0;
-        let mut last_usage = None;
+        // Delayed init: assigned inside the agent loop, consumed by
+        // `TurnCompleted { usage, .. }` after the loop exits. The loop
+        // is guaranteed to run at least once (it's the agent turn body),
+        // so the variable is definitely-assigned by the time it is read.
+        let mut last_usage: Option<crate::llm::LlmUsage>;
         // Stuckness detection runs in lockstep with the loop. See the
         // module doc in `stuckness.rs` for the design rationale.
         let mut stuck_guard = StucknessGuard::new();
@@ -329,7 +333,7 @@ impl TurnEngine {
                     // return an error to the caller. A legitimate long
                     // task that calls many different tools with
                     // different args never triggers this.
-                    match stuck_guard.record(&tool_name, &arguments) {
+                    match stuck_guard.record(&tool_name, arguments) {
                         Stuckness::NotStuck => {}
                         Stuckness::Repeated { tool, count } => {
                             tracing::warn!(tool = %tool, count, "Stuckness detected (repeat)");

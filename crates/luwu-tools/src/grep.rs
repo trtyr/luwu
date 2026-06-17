@@ -3,7 +3,7 @@
 //! Uses fff-search's SIMD-accelerated grep engine with automatic file indexing,
 //! constraint parsing, and multi-mode search (plain text / regex / fuzzy).
 //! The file index is refreshed when the working directory's mtime changes.
-
+use std::path::Path;
 use async_trait::async_trait;
 use fff_search::file_picker::{FilePicker, FilePickerOptions};
 use fff_search::grep::{GrepMode, GrepSearchOptions};
@@ -430,7 +430,7 @@ const MAX_STALENESS_DEPTH: usize = 4;
 const MAX_STALENESS_ENTRIES_PER_DIR: usize = 64;
 const STALENESS_SAFETY_VALVE_SECS: u64 = 60;
 
-fn is_index_stale(dir: &PathBuf, built_at: SystemTime) -> bool {
+fn is_index_stale(dir: &Path, built_at: SystemTime) -> bool {
     // 1. Top-level directory mtime.
     if dir_is_newer_than(dir, built_at) {
         return true;
@@ -475,12 +475,10 @@ fn any_descendant_is_newer_than(
         Ok(e) => e,
         Err(_) => return false,
     };
-    let mut count = 0usize;
-    for entry in entries.flatten() {
+    for (count, entry) in entries.flatten().enumerate() {
         if count >= MAX_STALENESS_ENTRIES_PER_DIR {
             break;
         }
-        count += 1;
         let path = entry.path();
         let is_dir = entry
             .file_type()
@@ -619,7 +617,7 @@ mod cache_staleness_tests {
             path = path.join(format!("level{i}"));
         }
         fs::create_dir_all(&path).unwrap();
-        let built_at = SystemTime::now();
+        let _built_at = SystemTime::now();
         sleep(Duration::from_millis(1100));
         fs::write(path.join("deep.txt"), "way too deep").unwrap();
         // Recursive check won't find it (depth cap), safety valve hasn't

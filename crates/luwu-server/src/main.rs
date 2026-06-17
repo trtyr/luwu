@@ -51,10 +51,10 @@ fn push_tracing_guard(guard: tracing_appender::non_blocking::WorkerGuard) {
 /// flushes any buffered log lines. Call from `shutdown_signal` so the
 /// rolling-file appender writes its tail before exit.
 fn flush_tracing_guards() {
-    if let Some(mutex) = TRACING_GUARDS.get() {
-        if let Ok(mut guards) = mutex.lock() {
-            guards.clear();
-        }
+    if let Some(mutex) = TRACING_GUARDS.get()
+        && let Ok(mut guards) = mutex.lock()
+    {
+        guards.clear();
     }
 }
 
