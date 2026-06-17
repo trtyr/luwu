@@ -192,6 +192,15 @@ pub enum TurnEvent {
     /// Token budget soft cap reached — a system message was injected
     /// asking the LLM to wrap up. Not a hard stop; the LLM gets one
     /// more iteration to gracefully conclude.
+    ///
+    /// IMPORTANT: `used_tokens` is the **effective** (cache-weighted)
+    /// token count, not the raw `total_tokens`. Effective tokens
+    /// discount cache hits at the per-provider ratio (DeepSeek 1/50,
+    /// GLM 1/4, MiniMax 1/5), so a 500K raw prompt with 80% cache
+    /// hit shows as ~140K used_tokens. This matches what the user
+    /// actually pays for, not what was sent over the wire.
+    /// Downstream consumers (TUI, WebSocket clients) should treat
+    /// this as the billing-relevant number.
     #[serde(rename = "budget_warning")]
     BudgetWarning { used_tokens: u64, soft_cap: u64 },
 }

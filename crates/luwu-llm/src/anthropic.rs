@@ -456,10 +456,32 @@ fn build_request_body(req: &LlmRequest) -> Result<Value> {
     // budget_tokens: 8192 is a reasonable default — enough for most
     // agentic reasoning without blowing up the context window.
     if req.model.to_lowercase().contains("minimax-") || req.model.to_lowercase().contains("abab") {
-        body["thinking"] = serde_json::json!({
-            "type": "enabled",
-            "budget_tokens": 8192
-        });
+        // `entry().or_insert()` lets the user's `extra_body.thinking` win
+        // later in the merge step, so they can override the default
+        // budget_tokens (e.g. bump to 16384 for longer reasoning) or even
+        // disable thinking by setting `{"type": "disabled"}`.
+        // `body` is a `Value` (not a `Map`), so we go through
+        // `as_object_mut()` to access the underlying `Map::entry` API.
+        if let Some(map) = body.as_object_mut() {
+            map.entry("thinking".to_string()).or_insert(serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": 8192
+            }));
+        }
+    }
+
+    // Merge user-supplied extra_body last so explicit user values always
+    // override the provider defaults above. Mirrors the OpenAI provider's
+    // behaviour in `openai.rs::build_request_body`. This unlocks:
+    //   - Anthropic-native users passing `metadata`, `tool_choice`, etc.
+    //   - MiniMax users tuning `thinking.budget_tokens` or disabling it
+    //   - Any future Anthropic-specific fields the user wants to set
+    if let Some(Value::Object(extras)) = &req.extra_body
+        && let Some(map) = body.as_object_mut()
+    {
+        for (k, v) in extras {
+            map.insert(k.clone(), v.clone());
+        }
     }
 
     Ok(body)
@@ -618,4 +640,110 @@ struct MessageDeltaUsage {
     /// GLM Coding Plan). Maps to LlmUsage::prompt_cache_hit_tokens.
     #[serde(default)]
     cache_read_input_tokens: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luwu_core::message::{ContentPart, Message, Role};
+
+    fn make_request(model: &str, extra_body: Option<serde_json::Value>) -> LlmRequest {
+        LlmRequest {
+            model: model.to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentPart::Text { text: "hi".to_string() }],
+                name: None,
+                tool_call_id: None,
+            }],
+            tools: vec![],
+            system_prompt: None,
+            temperature: None,
+            max_tokens: None,
+            stop_sequences: vec![],
+            extra_body,
+        }
+    }
+
+    #[test]
+    fn minimax_model_injects_default_thinking() {
+        let req = make_request("MiniMax-M3", None);
+        let body = build_request_body(&req).unwrap();
+        let thinking = &body["thinking"];
+        assert_eq!(thinking["type"], "enabled");
+        assert_eq!(thinking["budget_tokens"], 8192);
+    }
+
+    #[test]
+    fn abab_model_also_gets_default_thinking() {
+        let req = make_request("abab-6-chat", None);
+        let body = build_request_body(&req).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 8192);
+    }
+
+    #[test]
+    fn minimax_user_can_override_budget_tokens_via_extra_body() {
+        // User wants 16384 budget instead of default 8192
+        let req = make_request(
+            "MiniMax-M3",
+            Some(serde_json::json!({
+                "thinking": { "type": "enabled", "budget_tokens": 16384 }
+            })),
+        );
+        let body = build_request_body(&req).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 16384);
+    }
+
+    #[test]
+    fn minimax_user_can_disable_thinking_via_extra_body() {
+        let req = make_request(
+            "MiniMax-M3",
+            Some(serde_json::json!({
+                "thinking": { "type": "disabled" }
+            })),
+        );
+        let body = build_request_body(&req).unwrap();
+        assert_eq!(body["thinking"]["type"], "disabled");
+    }
+
+    #[test]
+    fn real_anthropic_does_not_inject_thinking_by_default() {
+        // claude-* must NOT get thinking auto-injected — users opt in
+        let req = make_request("claude-3-5-sonnet-20241022", None);
+        let body = build_request_body(&req).unwrap();
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn real_anthropic_can_opt_in_via_extra_body() {
+        // claude user wants thinking enabled with custom budget
+        let req = make_request(
+            "claude-3-5-sonnet-20241022",
+            Some(serde_json::json!({
+                "thinking": { "type": "enabled", "budget_tokens": 10000 }
+            })),
+        );
+        let body = build_request_body(&req).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 10000);
+    }
+
+    #[test]
+    fn extra_body_merges_arbitrary_anthropic_fields() {
+        // metadata, tool_choice, top_k — all flow through to Anthropic
+        let req = make_request(
+            "claude-3-5-sonnet-20241022",
+            Some(serde_json::json!({
+                "metadata": { "user_id": "u-123" },
+                "tool_choice": { "type": "any" },
+                "top_k": 5
+            })),
+        );
+        let body = build_request_body(&req).unwrap();
+        assert_eq!(body["metadata"]["user_id"], "u-123");
+        assert_eq!(body["tool_choice"]["type"], "any");
+        assert_eq!(body["top_k"], 5);
+    }
 }
