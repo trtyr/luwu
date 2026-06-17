@@ -234,8 +234,19 @@ async fn consume_stream(
                 match delta.delta {
                     DeltaType::TextDelta { text } => {
                         if !text.is_empty() {
-                            received_data = true;
-                            let _ = tx.send(Ok(LlmEvent::TextDelta(text))).await;
+                            // Strip trailing U+FFFD from the SSE chunk — the
+                            // `sse` crate uses `from_utf8_lossy` which replaces
+                            // invalid UTF-8 bytes (from mid-char chunk splits
+                            // or lossy model output) with U+FFFD. Frontend
+                            // then shows garbled "���" suffixes. See
+                            // `strip_trailing_replacement`.
+                            let safe = strip_trailing_replacement(&text);
+                            if !safe.is_empty() {
+                                received_data = true;
+                                let _ = tx
+                                    .send(Ok(LlmEvent::TextDelta(safe.to_string())))
+                                    .await;
+                            }
                         }
                     }
                     DeltaType::InputJsonDelta { partial_json } => {
@@ -252,7 +263,6 @@ async fn consume_stream(
                     }
                 }
             }
-
             "content_block_start" => {
                 let block: ContentBlockStart = match serde_json::from_str(&sse_event.data) {
                     Ok(b) => b,
@@ -275,7 +285,6 @@ async fn consume_stream(
                     let _ = tx.send(Ok(LlmEvent::ToolCallBegin { id, name })).await;
                 }
             }
-
             "content_block_stop" => {
                 let block: ContentBlockStop = match serde_json::from_str(&sse_event.data) {
                     Ok(b) => b,
@@ -298,7 +307,6 @@ async fn consume_stream(
                         .await;
                 }
             }
-
             "message_delta" => {
                 let msg_delta: MessageDelta = match serde_json::from_str(&sse_event.data) {
                     Ok(d) => d,
@@ -352,7 +360,6 @@ async fn consume_stream(
                         .await;
                 }
             }
-
             "message_start" => {
                 // Contains the initial message with input usage.
                 let msg_start: MessageStart = match serde_json::from_str(&sse_event.data) {
@@ -374,7 +381,6 @@ async fn consume_stream(
                     "Anthropic message started — input_tokens stored for later merge"
                 );
             }
-
             // message_stop, ping, etc. — ignore.
             _ => {
                 debug!(event_type, "Ignoring Anthropic SSE event type");
@@ -642,6 +648,32 @@ struct MessageDeltaUsage {
     cache_read_input_tokens: Option<u64>,
 }
 
+/// Strip trailing U+FFFD (UTF-8 replacement character) from a string.
+///
+/// The `sse` crate uses `from_utf8_lossy` internally, which replaces
+/// invalid UTF-8 bytes with U+FFFD. If an SSE chunk is split
+/// mid-character (rare but possible with small socket buffers or
+/// model output that ends on a partial multi-byte sequence), the
+/// trailing byte(s) become U+FFFD. Stripping them prevents the
+/// frontend from seeing garbled text like "有什么具体想做的吗？���".
+///
+/// Safe default: even if the model intentionally emits U+FFFD (legal
+/// but unusual), trailing instances are not meaningful output and
+/// stripping them is the right call.
+fn strip_trailing_replacement(s: &str) -> &str {
+    const REPLACEMENT: &[u8] = &[0xEF, 0xBF, 0xBD]; // U+FFFD in UTF-8
+    let bytes = s.as_bytes();
+    let mut end = bytes.len();
+    while end >= REPLACEMENT.len()
+        && &bytes[end - REPLACEMENT.len()..end] == REPLACEMENT
+    {
+        end -= REPLACEMENT.len();
+    }
+    // end is at a char boundary because REPLACEMENT is a valid
+    // 3-byte UTF-8 sequence and we only strip whole instances.
+    std::str::from_utf8(&bytes[..end]).unwrap_or("")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,5 +777,72 @@ mod tests {
         assert_eq!(body["metadata"]["user_id"], "u-123");
         assert_eq!(body["tool_choice"]["type"], "any");
         assert_eq!(body["top_k"], 5);
+    }
+
+    // ── strip_trailing_replacement ──────────────────────────────────
+
+    #[test]
+    fn strip_no_replacement_returns_unchanged() {
+        // Plain ASCII, no U+FFFD — should be a no-op.
+        assert_eq!(strip_trailing_replacement("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_chinese_no_replacement_returns_unchanged() {
+        // Valid CJK, no U+FFFD — should be a no-op.
+        assert_eq!(
+            strip_trailing_replacement("有什么具体想做的吗？"),
+            "有什么具体想做的吗？"
+        );
+    }
+
+    #[test]
+    fn strip_single_trailing_replacement() {
+        // Single trailing U+FFFD from a chunk split — strip it.
+        assert_eq!(
+            strip_trailing_replacement("有什么具体想做的吗？\u{FFFD}"),
+            "有什么具体想做的吗？"
+        );
+    }
+
+    #[test]
+    fn strip_multiple_trailing_replacements() {
+        // Multiple trailing U+FFFDs — strip all of them.
+        assert_eq!(
+            strip_trailing_replacement("hello\u{FFFD}\u{FFFD}\u{FFFD}"),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn strip_keeps_internal_replacements() {
+        // U+FFFD in the middle of the string should be preserved.
+        assert_eq!(
+            strip_trailing_replacement("hello\u{FFFD}world\u{FFFD}"),
+            "hello\u{FFFD}world"
+        );
+    }
+
+    #[test]
+    fn strip_empty_string() {
+        assert_eq!(strip_trailing_replacement(""), "");
+    }
+
+    #[test]
+    fn strip_all_replacements() {
+        // Entire string is just U+FFFDs — result is empty.
+        assert_eq!(
+            strip_trailing_replacement("\u{FFFD}\u{FFFD}\u{FFFD}"),
+            ""
+        );
+    }
+
+    #[test]
+    fn strip_chinese_with_trailing_replacement() {
+        // Real-world case: model response ends with CJK + lossy U+FFFD.
+        assert_eq!(
+            strip_trailing_replacement("我可以帮你完成各种软件开发任务\u{FFFD}"),
+            "我可以帮你完成各种软件开发任务"
+        );
     }
 }

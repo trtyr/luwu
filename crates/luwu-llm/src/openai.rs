@@ -245,8 +245,18 @@ async fn consume_stream(
             if let Some(content) = &delta.content
                 && !content.is_empty()
             {
-                received_data = true;
-                let _ = tx.send(Ok(LlmEvent::TextDelta(content.clone()))).await;
+                // Strip trailing U+FFFD from the SSE chunk — the
+                // `sse` crate uses `from_utf8_lossy` which replaces
+                // invalid UTF-8 bytes (from mid-char chunk splits or
+                // lossy model output) with U+FFFD. Frontend then shows
+                // garbled "���" suffixes. See `strip_trailing_replacement`.
+                let safe = strip_trailing_replacement(content);
+                if !safe.is_empty() {
+                    received_data = true;
+                    let _ = tx
+                        .send(Ok(LlmEvent::TextDelta(safe.to_string())))
+                        .await;
+                }
             }
 
             // Reasoning/thinking content (GLM-4.7, DeepSeek, MiniMax).
@@ -256,20 +266,25 @@ async fn consume_stream(
             if let Some(reasoning) = &delta.reasoning_content
                 && !reasoning.is_empty()
             {
-                // Reuse the same helper the unit tests exercise, so the
-                // streaming path is provably identical to the test cases.
-                // For cumulative providers (MiniMax) the helper slices
-                // off the already-sent prefix; for incremental providers
-                // (OpenAI/DeepSeek/GLM) it detects the mismatch and
-                // returns the full current chunk.
-                let new_chars = reasoning_delta_from_cumulative(&last_reasoning, reasoning);
-                last_reasoning.clear();
-                last_reasoning.push_str(reasoning);
-                if !new_chars.is_empty() {
-                    received_data = true;
-                    let _ = tx
-                        .send(Ok(LlmEvent::ReasoningDelta(new_chars.to_string())))
-                        .await;
+                // Strip trailing U+FFFD before the cumulative diff (same
+                // SSE/UTF-8 rationale as the text handler above).
+                let safe_reasoning = strip_trailing_replacement(reasoning);
+                if !safe_reasoning.is_empty() {
+                    // Reuse the same helper the unit tests exercise, so the
+                    // streaming path is provably identical to the test cases.
+                    // For cumulative providers (MiniMax) the helper slices
+                    // off the already-sent prefix; for incremental providers
+                    // (OpenAI/DeepSeek/GLM) it detects the mismatch and
+                    // returns the full current chunk.
+                    let new_chars = reasoning_delta_from_cumulative(&last_reasoning, safe_reasoning);
+                    last_reasoning.clear();
+                    last_reasoning.push_str(safe_reasoning);
+                    if !new_chars.is_empty() {
+                        received_data = true;
+                        let _ = tx
+                            .send(Ok(LlmEvent::ReasoningDelta(new_chars.to_string())))
+                            .await;
+                    }
                 }
             }
 
@@ -497,6 +512,7 @@ fn build_request_body(req: &LlmRequest) -> Result<Value> {
 
     Ok(body)
 }
+
 /// Convert a provider-agnostic [`Message`] into an OpenAI wire-format JSON value.
 fn convert_message(msg: &Message) -> Result<Value> {
     let role = match msg.role {
@@ -730,9 +746,37 @@ fn reasoning_delta_from_cumulative<'a>(prev: &str, current: &'a str) -> &'a str 
     &current[prev.len()..]
 }
 
+/// Strip trailing U+FFFD (UTF-8 replacement character) from a string.
+///
+/// The `sse` crate uses `from_utf8_lossy` internally, which replaces
+/// invalid UTF-8 bytes with U+FFFD. If an SSE chunk is split
+/// mid-character (rare but possible with small socket buffers or
+/// model output that ends on a partial multi-byte sequence), the
+/// trailing byte(s) become U+FFFD. Stripping them prevents the
+/// frontend from seeing garbled text like "有什么具体想做的吗？���".
+///
+/// Safe default: even if the model intentionally emits U+FFFD (legal
+/// but unusual), trailing instances are not meaningful output and
+/// stripping them is the right call.
+fn strip_trailing_replacement(s: &str) -> &str {
+    const REPLACEMENT: &[u8] = &[0xEF, 0xBF, 0xBD]; // U+FFFD in UTF-8
+    let bytes = s.as_bytes();
+    let mut end = bytes.len();
+    while end >= REPLACEMENT.len()
+        && &bytes[end - REPLACEMENT.len()..end] == REPLACEMENT
+    {
+        end -= REPLACEMENT.len();
+    }
+    // end is at a char boundary because REPLACEMENT is a valid
+    // 3-byte UTF-8 sequence and we only strip whole instances.
+    std::str::from_utf8(&bytes[..end]).unwrap_or("")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::reasoning_delta_from_cumulative;
+    use super::{reasoning_delta_from_cumulative, strip_trailing_replacement};
+
+    // ── reasoning_delta_from_cumulative ──────────────────────────────
 
     #[test]
     fn empty_current_returns_empty() {
@@ -819,5 +863,72 @@ mod tests {
         let prev = "thinking";
         let current = "";
         assert_eq!(reasoning_delta_from_cumulative(prev, current), "");
+    }
+
+    // ── strip_trailing_replacement ──────────────────────────────────
+
+    #[test]
+    fn strip_no_replacement_returns_unchanged() {
+        // Plain ASCII, no U+FFFD — should be a no-op.
+        assert_eq!(strip_trailing_replacement("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_chinese_no_replacement_returns_unchanged() {
+        // Valid CJK, no U+FFFD — should be a no-op.
+        assert_eq!(
+            strip_trailing_replacement("有什么具体想做的吗？"),
+            "有什么具体想做的吗？"
+        );
+    }
+
+    #[test]
+    fn strip_single_trailing_replacement() {
+        // Single trailing U+FFFD from a chunk split — strip it.
+        assert_eq!(
+            strip_trailing_replacement("有什么具体想做的吗？\u{FFFD}"),
+            "有什么具体想做的吗？"
+        );
+    }
+
+    #[test]
+    fn strip_multiple_trailing_replacements() {
+        // Multiple trailing U+FFFDs — strip all of them.
+        assert_eq!(
+            strip_trailing_replacement("hello\u{FFFD}\u{FFFD}\u{FFFD}"),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn strip_keeps_internal_replacements() {
+        // U+FFFD in the middle of the string should be preserved.
+        assert_eq!(
+            strip_trailing_replacement("hello\u{FFFD}world\u{FFFD}"),
+            "hello\u{FFFD}world"
+        );
+    }
+
+    #[test]
+    fn strip_empty_string() {
+        assert_eq!(strip_trailing_replacement(""), "");
+    }
+
+    #[test]
+    fn strip_all_replacements() {
+        // Entire string is just U+FFFDs — result is empty.
+        assert_eq!(
+            strip_trailing_replacement("\u{FFFD}\u{FFFD}\u{FFFD}"),
+            ""
+        );
+    }
+
+    #[test]
+    fn strip_chinese_with_trailing_replacement() {
+        // Real-world case: model response ends with CJK + lossy U+FFFD.
+        assert_eq!(
+            strip_trailing_replacement("我可以帮你完成各种软件开发任务\u{FFFD}"),
+            "我可以帮你完成各种软件开发任务"
+        );
     }
 }
