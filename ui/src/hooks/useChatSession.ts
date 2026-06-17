@@ -65,12 +65,13 @@ export function useChatSession(): ChatSession {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState('glm-4.7');
-  const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [contextPct, setContextPct] = useState(0);
   const [contextTokens, setContextTokens] = useState(0);
   const [iteration, setIteration] = useState(0);
   const [spinnerVerb, setSpinnerVerb] = useState<string | undefined>(undefined);
-  const [connected, setConnected] = useState(true);
+
+  // Connection management extracted to useConnection (heartbeat + git branch).
+  const { connected, gitBranch } = useConnection();
   const abortRef = useRef<AbortController | null>(null);
   const lastActivityRef = useRef(Date.now());
   const streamingRef = useRef<DisplayMessage | null>(null);
@@ -88,7 +89,6 @@ export function useChatSession(): ChatSession {
         if (!ok) { setError('Cannot reach luwu-server'); setPhase('error'); return; }
         const id = await createSession();
         setSessionId(id);
-        setGitBranch(getGitBranchSync());
         try {
           const models = await getModels();
           if (models.length > 0 && models[0].id) setModel(models[0].id);
@@ -102,16 +102,6 @@ export function useChatSession(): ChatSession {
         setPhase('error');
       }
     })();
-  }, []);
-
-  // ── Heartbeat: ping every 10s so daemon knows we're alive ──
-  useEffect(() => {
-    const timer = setInterval(() => {
-      checkHealth()
-        .then(() => setConnected(true))
-        .catch(() => setConnected(false));
-    }, 10_000);
-    return () => clearInterval(timer);
   }, []);
 
   const cancel = useCallback(() => {
