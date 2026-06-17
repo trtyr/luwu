@@ -3,7 +3,6 @@
 //! Uses fff-search's SIMD-accelerated grep engine with automatic file indexing,
 //! constraint parsing, and multi-mode search (plain text / regex / fuzzy).
 //! The file index is refreshed when the working directory's mtime changes.
-use std::path::Path;
 use async_trait::async_trait;
 use fff_search::file_picker::{FilePicker, FilePickerOptions};
 use fff_search::grep::{GrepMode, GrepSearchOptions};
@@ -12,6 +11,7 @@ use fff_search::{AiGrepConfig, FFFMode, QueryParser};
 use luwu_core::{Result, Tool, ToolContext, ToolOutput};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::RwLock;
 use std::time::SystemTime;
@@ -463,11 +463,7 @@ fn dir_is_newer_than(dir: &std::path::Path, t: SystemTime) -> bool {
 /// Returns true if any descendant directory up to `MAX_STALENESS_DEPTH`
 /// levels deep has an mtime strictly after `t`. Bounded by
 /// `MAX_STALENESS_ENTRIES_PER_DIR` to keep worst-case work predictable.
-fn any_descendant_is_newer_than(
-    dir: &std::path::Path,
-    t: SystemTime,
-    depth: usize,
-) -> bool {
+fn any_descendant_is_newer_than(dir: &std::path::Path, t: SystemTime, depth: usize) -> bool {
     if depth >= MAX_STALENESS_DEPTH {
         return false;
     }
@@ -480,15 +476,9 @@ fn any_descendant_is_newer_than(
             break;
         }
         let path = entry.path();
-        let is_dir = entry
-            .file_type()
-            .map(|ft| ft.is_dir())
-            .unwrap_or(false);
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
         // Skip symlinks to avoid cycles.
-        let is_symlink = entry
-            .file_type()
-            .map(|ft| ft.is_symlink())
-            .unwrap_or(false);
+        let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
         if is_symlink {
             continue;
         }

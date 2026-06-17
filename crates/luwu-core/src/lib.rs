@@ -37,7 +37,9 @@ pub use error::{LuwuError, Result};
 pub use event::{Event, EventBus, SessionId, TurnEvent, TurnId};
 pub use file_history::{DiffStats, FileHistory, FileHistorySnapshot, FileHistoryState};
 pub use llm::{LlmEvent, LlmProvider, LlmRequest, LlmUsage, ToolDefinition};
-pub use memory_backend::{MemoryBackend, MemoryBackendFactory, MemoryResult, Observation, Priority, Reflection};
+pub use memory_backend::{
+    MemoryBackend, MemoryBackendFactory, MemoryResult, Observation, Priority, Reflection,
+};
 pub use message::{ContentPart, Message, Role};
 pub use prompt::{
     default_system_prompt, system_prompt_with_tools, system_prompt_with_tools_and_skills,

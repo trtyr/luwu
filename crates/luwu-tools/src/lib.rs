@@ -23,8 +23,8 @@ pub mod web_fetch;
 pub mod write;
 
 pub mod hashline;
-use luwu_core::memory_backend::MemoryBackendFactory;
 use luwu_core::Tool;
+use luwu_core::memory_backend::MemoryBackendFactory;
 
 /// Build the list of built-in tools. The caller must provide a
 /// `MemoryBackendFactory` so the `memory` tool can be wired to a concrete

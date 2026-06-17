@@ -44,9 +44,9 @@ impl Default for MemoryTool {
         // No-op factory that errors — callers must provide a real factory.
         // This exists so the type can be `Default` for convenience wrappers
         // (the actual `all_builtin_tools` always passes a real factory).
-        Self::new(Arc::new(|_home, _working_dir, _session_id| -> Box<dyn MemoryBackend> {
-            Box::new(StubBackend)
-        }))
+        Self::new(Arc::new(
+            |_home, _working_dir, _session_id| -> Box<dyn MemoryBackend> { Box::new(StubBackend) },
+        ))
     }
 }
 

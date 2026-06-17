@@ -223,8 +223,7 @@ impl AgentService {
                         //   grep "Cache" ~/.luwu/sessions/<id>/agent.log
                         // to verify cache data per turn.
                         let cache_pct = if usage.prompt_tokens > 0 {
-                            (usage.prompt_cache_hit_tokens as f64
-                                / usage.prompt_tokens as f64
+                            (usage.prompt_cache_hit_tokens as f64 / usage.prompt_tokens as f64
                                 * 100.0) as u32
                         } else {
                             0
@@ -478,9 +477,7 @@ impl AgentServiceBuilder {
     /// this is a programmer error caught at construction time.
     #[tracing::instrument(skip_all)]
     pub fn build(self) -> AgentService {
-        let state = self
-            .state
-            .expect("AgentServiceBuilder: state is required");
+        let state = self.state.expect("AgentServiceBuilder: state is required");
         let provider = self
             .provider
             .expect("AgentServiceBuilder: provider is required");

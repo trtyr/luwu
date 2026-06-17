@@ -35,7 +35,7 @@
 //! }
 //! ```
 
-use std::collections::{hash_map::DefaultHasher, VecDeque};
+use std::collections::{VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 
 use serde_json::Value;
@@ -48,17 +48,11 @@ pub enum Stuckness {
     /// `repeat_threshold` consecutive calls to `tool` with identical
     /// arguments. The agent is calling the same tool with the same
     /// arguments over and over.
-    Repeated {
-        tool: String,
-        count: usize,
-    },
+    Repeated { tool: String, count: usize },
     /// Two consecutive sliding windows have identical *unordered*
     /// fingerprints, meaning the agent is cycling through a fixed
     /// pattern (e.g. A→B→A→B with no other progress).
-    Cycling {
-        tool: String,
-        count: usize,
-    },
+    Cycling { tool: String, count: usize },
 }
 
 impl Stuckness {
@@ -169,30 +163,29 @@ impl StucknessGuard {
             // so it doesn't fire prematurely.
             let n = self.cycle_window_size;
             let last_n_first = &self.window[self.window.len() - n];
-            let all_identical = (0..n).all(|i| {
-                &self.window[self.window.len() - n + i] == last_n_first
-            });
+            let all_identical =
+                (0..n).all(|i| &self.window[self.window.len() - n + i] == last_n_first);
             if !all_identical {
-            let new_fp = self.fingerprint_last_n(self.cycle_window_size);
-            if let Some(prev_fp) = self.last_cycle_fingerprint {
-                if new_fp == prev_fp {
-                    self.cycle_match_count += 1;
-                    if self.cycle_match_count >= self.cycle_match_threshold {
-                        let tool = self
-                            .window
-                            .back()
-                            .map(|(t, _)| t.clone())
-                            .unwrap_or_default();
-                        return Stuckness::Cycling {
-                            tool,
-                            count: self.cycle_match_count,
-                        };
+                let new_fp = self.fingerprint_last_n(self.cycle_window_size);
+                if let Some(prev_fp) = self.last_cycle_fingerprint {
+                    if new_fp == prev_fp {
+                        self.cycle_match_count += 1;
+                        if self.cycle_match_count >= self.cycle_match_threshold {
+                            let tool = self
+                                .window
+                                .back()
+                                .map(|(t, _)| t.clone())
+                                .unwrap_or_default();
+                            return Stuckness::Cycling {
+                                tool,
+                                count: self.cycle_match_count,
+                            };
+                        }
+                    } else {
+                        self.cycle_match_count = 0;
                     }
-                } else {
-                    self.cycle_match_count = 0;
                 }
-            }
-            self.last_cycle_fingerprint = Some(new_fp);
+                self.last_cycle_fingerprint = Some(new_fp);
             }
         }
 
@@ -253,10 +246,19 @@ mod tests {
     fn not_stuck_on_diverse_calls() {
         let mut g = StucknessGuard::new();
         // Different tools, different args → never stuck
-        assert_eq!(g.record("read", &json!({"path": "/a"})), Stuckness::NotStuck);
-        assert_eq!(g.record("write", &json!({"path": "/b", "content": "x"})), Stuckness::NotStuck);
+        assert_eq!(
+            g.record("read", &json!({"path": "/a"})),
+            Stuckness::NotStuck
+        );
+        assert_eq!(
+            g.record("write", &json!({"path": "/b", "content": "x"})),
+            Stuckness::NotStuck
+        );
         assert_eq!(g.record("bash", &json!({"cmd": "ls"})), Stuckness::NotStuck);
-        assert_eq!(g.record("grep", &json!({"pattern": "foo"})), Stuckness::NotStuck);
+        assert_eq!(
+            g.record("grep", &json!({"pattern": "foo"})),
+            Stuckness::NotStuck
+        );
     }
 
     #[test]
@@ -271,8 +273,14 @@ mod tests {
     #[test]
     fn repeat_detected_on_identical_calls() {
         let mut g = StucknessGuard::new();
-        assert_eq!(g.record("read", &json!({"path": "/a"})), Stuckness::NotStuck);
-        assert_eq!(g.record("read", &json!({"path": "/a"})), Stuckness::NotStuck);
+        assert_eq!(
+            g.record("read", &json!({"path": "/a"})),
+            Stuckness::NotStuck
+        );
+        assert_eq!(
+            g.record("read", &json!({"path": "/a"})),
+            Stuckness::NotStuck
+        );
         // 3rd identical call → stuck
         let r = g.record("read", &json!({"path": "/a"}));
         assert_eq!(
@@ -288,10 +296,19 @@ mod tests {
     fn cycle_detected_on_ab_pattern() {
         let mut g = StucknessGuard::new();
         // A→B→A→B with default cycle_window_size=2, cycle_match_threshold=2
-        assert_eq!(g.record("read", &json!({"path": "/a"})), Stuckness::NotStuck);
-        assert_eq!(g.record("write", &json!({"path": "/a", "content": "x"})), Stuckness::NotStuck);
+        assert_eq!(
+            g.record("read", &json!({"path": "/a"})),
+            Stuckness::NotStuck
+        );
+        assert_eq!(
+            g.record("write", &json!({"path": "/a", "content": "x"})),
+            Stuckness::NotStuck
+        );
         // After 2 calls, fingerprint {A} then {A,B}. No match yet.
-        assert_eq!(g.record("read", &json!({"path": "/a"})), Stuckness::NotStuck);
+        assert_eq!(
+            g.record("read", &json!({"path": "/a"})),
+            Stuckness::NotStuck
+        );
         // After 3rd call, fingerprint of last 2 = {read, write} (unordered).
         // Previous fingerprint was also {read, write} → match. cycle_count = 1.
         // After 4th call, fingerprint still {read, write}. cycle_count = 2 → stuck!
@@ -319,7 +336,10 @@ mod tests {
         // We should be stuck after 3 identical calls.
         g.reset();
         // After reset, a single different call should not be stuck.
-        assert_eq!(g.record("write", &json!({"path": "/b"})), Stuckness::NotStuck);
+        assert_eq!(
+            g.record("write", &json!({"path": "/b"})),
+            Stuckness::NotStuck
+        );
     }
 
     #[test]
@@ -327,7 +347,10 @@ mod tests {
         // Higher repeat threshold — 5 calls before stuck.
         let mut g = StucknessGuard::with_thresholds(5, 2, 2);
         for _ in 0..4 {
-            assert_eq!(g.record("read", &json!({"path": "/a"})), Stuckness::NotStuck);
+            assert_eq!(
+                g.record("read", &json!({"path": "/a"})),
+                Stuckness::NotStuck
+            );
         }
         let r = g.record("read", &json!({"path": "/a"}));
         assert!(matches!(r, Stuckness::Repeated { count: 5, .. }));

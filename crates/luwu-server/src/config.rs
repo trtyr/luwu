@@ -224,8 +224,7 @@ mod tests {
     /// this test catches it.
     #[test]
     fn example_default_provider_exists() {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .expect("CARGO_MANIFEST_DIR not set");
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
         let example_path = std::path::Path::new(&manifest_dir)
             .join("..")
             .join("..")
@@ -255,8 +254,7 @@ mod tests {
     /// This test ensures no future edit accidentally duplicates the key.
     #[test]
     fn example_no_duplicate_provider_keys() {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .expect("CARGO_MANIFEST_DIR not set");
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
         let example_path = std::path::Path::new(&manifest_dir)
             .join("..")
             .join("..")
@@ -269,7 +267,11 @@ mod tests {
 
         assert_eq!(
             config.providers.len(),
-            config.providers.keys().collect::<std::collections::HashSet<_>>().len(),
+            config
+                .providers
+                .keys()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
             "config.example.toml has duplicate provider keys — HashMap silently keeps the last one"
         );
     }

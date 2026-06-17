@@ -187,19 +187,13 @@ pub enum TurnEvent {
     /// identical arguments, or a 2-call cycle has been detected. The
     /// engine breaks the loop and emits this so the UI can show why.
     #[serde(rename = "stuck")]
-    Stuck {
-        tool: String,
-        reason: String,
-    },
+    Stuck { tool: String, reason: String },
 
     /// Token budget soft cap reached — a system message was injected
     /// asking the LLM to wrap up. Not a hard stop; the LLM gets one
     /// more iteration to gracefully conclude.
     #[serde(rename = "budget_warning")]
-    BudgetWarning {
-        used_tokens: u64,
-        soft_cap: u64,
-    },
+    BudgetWarning { used_tokens: u64, soft_cap: u64 },
 }
 
 // ---- Event bus ----

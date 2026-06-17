@@ -327,7 +327,12 @@ async fn consume_stream(
             // 3. Plain OpenAI: both default to 0.
             let prompt_cache_hit_tokens = usage
                 .prompt_cache_hit_tokens
-                .or_else(|| usage.prompt_tokens_details.as_ref().map(|d| d.cached_tokens))
+                .or_else(|| {
+                    usage
+                        .prompt_tokens_details
+                        .as_ref()
+                        .map(|d| d.cached_tokens)
+                })
                 .unwrap_or(0);
             let prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens.unwrap_or(0);
             let event = LlmEvent::Done(LlmUsage {

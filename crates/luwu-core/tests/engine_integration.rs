@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use luwu_core::engine::TurnEngine;
@@ -67,10 +67,7 @@ impl LlmProvider for MockLlmProvider {
         Ok(vec!["mock-model".to_string()])
     }
 
-    async fn stream(
-        &self,
-        _req: LlmRequest,
-    ) -> Result<mpsc::Receiver<Result<LlmEvent>>> {
+    async fn stream(&self, _req: LlmRequest) -> Result<mpsc::Receiver<Result<LlmEvent>>> {
         self.responses
             .lock()
             .unwrap()
@@ -106,11 +103,7 @@ impl Tool for EchoTool {
         })
     }
 
-    async fn execute(
-        &self,
-        _input: Value,
-        _context: ToolContext,
-    ) -> Result<ToolOutput> {
+    async fn execute(&self, _input: Value, _context: ToolContext) -> Result<ToolOutput> {
         Ok(ToolOutput {
             content: "ok".to_string(),
             is_error: false,
@@ -141,10 +134,7 @@ fn tool_call_events(call_id: &str, tool_name: &str, args: Value, usage: LlmUsage
 
 /// A "done, here's a final text" event sequence.
 fn text_done_events(text: &str, usage: LlmUsage) -> Vec<LlmEvent> {
-    vec![
-        LlmEvent::TextDelta(text.to_string()),
-        LlmEvent::Done(usage),
-    ]
+    vec![LlmEvent::TextDelta(text.to_string()), LlmEvent::Done(usage)]
 }
 
 fn default_usage() -> LlmUsage {
@@ -158,9 +148,7 @@ fn default_usage() -> LlmUsage {
 }
 
 fn build_engine_with_provider(provider: Arc<dyn LlmProvider>) -> TurnEngine {
-    let tools = ToolRegistry::builder()
-        .register(Box::new(EchoTool))
-        .build();
+    let tools = ToolRegistry::builder().register(Box::new(EchoTool)).build();
     let events = EventBus::new(64);
     let skills = SkillRegistry::default();
     TurnEngine::new(provider, tools, skills, events, PathBuf::from("/tmp"))
@@ -248,10 +236,7 @@ async fn budget_injects_wrap_up_hint_after_soft_cap() {
             Ok(vec!["recording-model".to_string()])
         }
 
-        async fn stream(
-            &self,
-            req: LlmRequest,
-        ) -> Result<mpsc::Receiver<Result<LlmEvent>>> {
+        async fn stream(&self, req: LlmRequest) -> Result<mpsc::Receiver<Result<LlmEvent>>> {
             self.requests.lock().unwrap().push(req);
             self.responses
                 .lock()

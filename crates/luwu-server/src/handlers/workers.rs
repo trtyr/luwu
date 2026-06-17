@@ -66,7 +66,11 @@ pub(crate) fn messages_to_transcript(messages: &[Message], max_chars: usize) -> 
                 ContentPart::ToolResult {
                     content, is_error, ..
                 } => {
-                    let prefix = if *is_error { "Tool Error" } else { "Tool Result" };
+                    let prefix = if *is_error {
+                        "Tool Error"
+                    } else {
+                        "Tool Result"
+                    };
                     out.push_str(&format!("{prefix}: {content}\n\n"));
                 }
                 // Reasoning/thinking content is rendered as plain text

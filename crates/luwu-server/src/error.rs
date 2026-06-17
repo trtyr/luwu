@@ -47,9 +47,7 @@ impl From<LuwuError> for ApiError {
     fn from(e: LuwuError) -> Self {
         match e {
             LuwuError::LlmAuth(msg) => ApiError::Unauthorized(msg),
-            LuwuError::LlmTimeout => ApiError::GatewayTimeout(
-                "LLM request timed out".to_string(),
-            ),
+            LuwuError::LlmTimeout => ApiError::GatewayTimeout("LLM request timed out".to_string()),
             LuwuError::Session(_) => ApiError::NotFound(e.to_string()),
             LuwuError::Config(_) => ApiError::BadRequest(e.to_string()),
             other => ApiError::Internal(other.to_string()),

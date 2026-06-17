@@ -25,10 +25,7 @@ pub fn system_prompt_with_tools(tool_names: &[&str]) -> String {
 }
 
 /// Build a system prompt that includes both tools and skills.
-pub fn system_prompt_with_tools_and_skills(
-    tool_names: &[&str],
-    skills: &SkillRegistry,
-) -> String {
+pub fn system_prompt_with_tools_and_skills(tool_names: &[&str], skills: &SkillRegistry) -> String {
     let tool_list = tool_names
         .iter()
         .map(|name| format!("- {name}"))

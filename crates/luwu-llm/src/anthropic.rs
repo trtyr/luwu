@@ -179,6 +179,10 @@ async fn consume_stream(
     // Accumulate tool call arguments across content_block_delta events.
     let mut active_tool_calls: HashMap<String, PartialToolCall> = HashMap::new();
     let mut received_data = false;
+    // Anthropic splits usage across two SSE events: input_tokens arrives
+    // in message_start, output_tokens + cache fields in message_delta.
+    // We track input_tokens here and combine them at message_delta time.
+    let mut input_tokens: u64 = 0;
 
     loop {
         let result = match tokio::time::timeout(
@@ -306,19 +310,44 @@ async fn consume_stream(
 
                 if let Some(usage) = msg_delta.usage {
                     received_data = true;
+                    // Real Anthropic usage — not estimates. The cache fields
+                    // are what the LLM provider actually reported, not 0.
+                    // Enable RUST_LOG=luwu_llm=debug to see the raw values
+                    // from the API response per request.
+                    let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
+                    let cache_creation = usage.cache_creation_input_tokens.unwrap_or(0);
+                    tracing::debug!(
+                        "Provider usage (raw from API response) — \
+                         input={} output={} | cache: read={:?} creation={:?}",
+                        input_tokens,
+                        usage.output_tokens,
+                        usage.cache_read_input_tokens,
+                        usage.cache_creation_input_tokens,
+                    );
+                    // Full prompt = non-cached input + cache reads + cache
+                    // creations. Anthropic's `input_tokens` is the NON-cached
+                    // portion only; cache_read and cache_creation are
+                    // separate fields that together make up the cached part.
+                    // Use input_tokens from message_start when available,
+                    // falling back to delta's input_tokens if message_start
+                    // was missing or 0 (defensive — Anthropic normally sends
+                    // both, but some proxy implementations may skip start).
+                    let final_input_tokens = input_tokens.max(usage.input_tokens.unwrap_or(0));
+                    let prompt_total = final_input_tokens + cache_read + cache_creation;
                     let _ = tx
                         .send(Ok(LlmEvent::Done(LlmUsage {
-                            prompt_tokens: 0, // Anthropic sends output_tokens here
+                            prompt_tokens: prompt_total,
                             completion_tokens: usage.output_tokens,
-                            total_tokens: usage.output_tokens, // Will be corrected by message_start usage
-                            // Anthropic's prompt caching fields are reported
-                            // separately from `usage` here; default to 0
-                            // (Anthropic reports them via the dedicated
-                            // `cache_creation_input_tokens` and
-                            // `cache_read_input_tokens` fields, which we
-                            // don't track in LlmUsage yet).
-                            prompt_cache_hit_tokens: 0,
-                            prompt_cache_miss_tokens: 0,
+                            total_tokens: prompt_total + usage.output_tokens,
+                            // Tokens served from cache — the "cache hit"
+                            // count that matters for billing (Anthropic:
+                            // ~1/10 of full price; GLM Coding Plan similar).
+                            prompt_cache_hit_tokens: cache_read,
+                            // Non-cached portion = final_input_tokens
+                            // (Anthropic already excludes cache_read and
+                            // cache_creation from this field). This is the
+                            // full-price portion of the prompt.
+                            prompt_cache_miss_tokens: final_input_tokens,
                         })))
                         .await;
                 }
@@ -333,11 +362,16 @@ async fn consume_stream(
                         continue;
                     }
                 };
-                // We don't emit a Done event here since the message isn't done yet.
-                // Store usage info if needed for later.
+                // Store input_tokens for later merge with message_delta's
+                // output_tokens + cache fields. Anthropic splits the usage
+                // object across two SSE events: input_tokens arrives here
+                // in message_start, and the rest (output_tokens,
+                // cache_creation_input_tokens, cache_read_input_tokens)
+                // arrives in the final message_delta event.
+                input_tokens = msg_start.message.usage.input_tokens;
                 debug!(
-                    input_tokens = msg_start.message.usage.input_tokens,
-                    "Anthropic message started"
+                    input_tokens,
+                    "Anthropic message started — input_tokens stored for later merge"
                 );
             }
 
@@ -547,4 +581,20 @@ struct MessageDelta {
 #[derive(Debug, Deserialize)]
 struct MessageDeltaUsage {
     output_tokens: u64,
+
+    // Anthropic reports these in the final message_delta event. All three
+    // are optional because only providers that have prefix caching enabled
+    // (GLM Coding Plan, Anthropic direct, etc.) send them — providers
+    // without caching simply omit the fields and we treat as 0.
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    /// Tokens just written to cache (5-min or 1-hour TTL). Informational;
+    /// we don't track this separately in LlmUsage.
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
+    /// Tokens served from cache — this is the "cache hit" count that
+    /// matters for billing (~1/10 of full price on Anthropic, similar on
+    /// GLM Coding Plan). Maps to LlmUsage::prompt_cache_hit_tokens.
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
 }

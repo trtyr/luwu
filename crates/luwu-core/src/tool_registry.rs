@@ -256,9 +256,7 @@ mod tests {
 
     #[test]
     fn builder_register_and_get() {
-        let reg = ToolRegistry::builder()
-            .register(make_tool("bash"))
-            .build();
+        let reg = ToolRegistry::builder().register(make_tool("bash")).build();
         assert!(!reg.is_empty());
         assert_eq!(reg.len(), 1);
         assert!(reg.get("bash").is_some());
@@ -287,9 +285,7 @@ mod tests {
 
     #[test]
     fn builder_definitions_match() {
-        let reg = ToolRegistry::builder()
-            .register(make_tool("bash"))
-            .build();
+        let reg = ToolRegistry::builder().register(make_tool("bash")).build();
         let defs = reg.definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "bash");
@@ -312,9 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_calls_tool() {
-        let reg = ToolRegistry::builder()
-            .register(make_tool("echo"))
-            .build();
+        let reg = ToolRegistry::builder().register(make_tool("echo")).build();
         let output = reg
             .execute(
                 "echo",
@@ -329,9 +323,7 @@ mod tests {
 
     #[test]
     fn clone_shares_registry() {
-        let reg = ToolRegistry::builder()
-            .register(make_tool("bash"))
-            .build();
+        let reg = ToolRegistry::builder().register(make_tool("bash")).build();
         let cloned = reg.clone();
         assert_eq!(cloned.len(), 1);
         assert!(cloned.get("bash").is_some());
@@ -340,9 +332,7 @@ mod tests {
     /// P0 risk: Arc::get_mut panic on register after clone is now structurally impossible.
     #[test]
     fn no_panic_register_after_clone() {
-        let reg = ToolRegistry::builder()
-            .register(make_tool("bash"))
-            .build();
+        let reg = ToolRegistry::builder().register(make_tool("bash")).build();
         let _cloned = reg.clone();
         // There is no `register` method on `ToolRegistry` anymore — the builder
         // is the only way to add tools, and it cannot be cloned.

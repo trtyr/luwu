@@ -224,8 +224,7 @@ impl TurnEngine {
                     total_usage.total_tokens, TOKEN_BUDGET_SOFT_CAP
                 ));
             } else if !budget_warned
-                && total_usage.total_tokens
-                    > TOKEN_BUDGET_SOFT_CAP * TOKEN_BUDGET_WARN_PCT / 100
+                && total_usage.total_tokens > TOKEN_BUDGET_SOFT_CAP * TOKEN_BUDGET_WARN_PCT / 100
             {
                 tracing::warn!(
                     total_tokens = total_usage.total_tokens,
@@ -562,9 +561,7 @@ impl TurnEngine {
                             // system message asking the LLM to wrap up.
                             // The LLM gets to decide how to conclude —
                             // this is not a hard stop.
-                            if !budget_warned
-                                && total_usage.total_tokens > TOKEN_BUDGET_SOFT_CAP
-                            {
+                            if !budget_warned && total_usage.total_tokens > TOKEN_BUDGET_SOFT_CAP {
                                 budget_warned = true;
                                 tracing::warn!(
                                     total_tokens = total_usage.total_tokens,
@@ -620,7 +617,11 @@ impl TurnEngine {
                 if !current_text.is_empty() {
                     // clone here so the skill-reference detector below
                     // can still borrow `current_text`.
-                    let _ = tx.send(TurnEvent::TextDelta { delta: current_text.clone() }).await;
+                    let _ = tx
+                        .send(TurnEvent::TextDelta {
+                            delta: current_text.clone(),
+                        })
+                        .await;
                 }
 
                 // Detect skill reference in assistant text and inject instructions.
@@ -836,10 +837,8 @@ impl TurnEngine {
     /// token-budget wrap-up hint without permanently mutating the
     /// engine's skill or tool registry.
     fn build_request(&self, session: &SessionData, extra_system_prompt: &str) -> LlmRequest {
-        let mut system_prompt = system_prompt_with_tools_and_skills(
-            &self.tools.tool_names(),
-            &self.skills,
-        );
+        let mut system_prompt =
+            system_prompt_with_tools_and_skills(&self.tools.tool_names(), &self.skills);
         if !extra_system_prompt.is_empty() {
             system_prompt.push_str(extra_system_prompt);
         }
@@ -924,7 +923,9 @@ impl TurnEngine {
             content_parts.push(ContentPart::Text { text: current_text });
         }
         if !reasoning_text.is_empty() {
-            content_parts.push(ContentPart::Reasoning { text: reasoning_text });
+            content_parts.push(ContentPart::Reasoning {
+                text: reasoning_text,
+            });
         }
 
         // Add tool calls.

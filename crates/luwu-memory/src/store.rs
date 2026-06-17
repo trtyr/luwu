@@ -8,8 +8,8 @@
 
 use crate::checkpoint::Checkpoint;
 use crate::history::{HistoryEntry, HistoryLog, TokenEstimator};
-use luwu_core::memory_backend::{Observation, Reflection};
 use luwu_core::Message;
+use luwu_core::memory_backend::{Observation, Reflection};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -485,7 +485,6 @@ impl MemoryStore {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // MemoryBackend impl — exposes MemoryStore to luwu-tools via the
 // microkernel-defined trait. This is the only place luwu-memory touches the
@@ -506,11 +505,13 @@ impl luwu_core::memory_backend::MemoryBackend for MemoryStore {
     }
 
     fn append_global_entry(&self, entry: &str) -> luwu_core::memory_backend::MemoryResult<()> {
-        self.append_global_entry(entry).map_err(|e| Box::new(e) as _)
+        self.append_global_entry(entry)
+            .map_err(|e| Box::new(e) as _)
     }
 
     fn append_project_entry(&self, entry: &str) -> luwu_core::memory_backend::MemoryResult<()> {
-        self.append_project_entry(entry).map_err(|e| Box::new(e) as _)
+        self.append_project_entry(entry)
+            .map_err(|e| Box::new(e) as _)
     }
 
     fn global_path(&self) -> &Path {
@@ -521,7 +522,6 @@ impl luwu_core::memory_backend::MemoryBackend for MemoryStore {
         self.project_path()
     }
 }
-
 
 /// Hash a path to a short directory name.
 fn hash_path(path: &Path) -> String {

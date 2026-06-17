@@ -214,7 +214,9 @@ async fn main() {
             pid_file.cleanup_stale();
             match pid_file.write() {
                 Ok(pid) => tracing::info!("Daemon PID {pid} → {}", pid_file.path().display()),
-                Err(e) => tracing::warn!(error = %e, "Failed to write PID file (continuing anyway)"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to write PID file (continuing anyway)")
+                }
             }
 
             // Clean up PID file on signal-based shutdown.
@@ -245,13 +247,12 @@ async fn main() {
                         .as_millis() as u64;
                     if now - last > IDLE_SHUTDOWN_SECS * 1000 {
                         // Double-check: is any session actively running?
-                        let has_running = auto_sessions
-                            .list()
-                            .await
-                            .iter()
-                            .any(|s| s.is_running);
+                        let has_running = auto_sessions.list().await.iter().any(|s| s.is_running);
                         if has_running {
-                            tracing::debug!("Idle for {}s but session still running — keeping alive", IDLE_SHUTDOWN_SECS);
+                            tracing::debug!(
+                                "Idle for {}s but session still running — keeping alive",
+                                IDLE_SHUTDOWN_SECS
+                            );
                             continue;
                         }
                         tracing::info!("No TUI activity for {IDLE_SHUTDOWN_SECS}s — auto-shutdown");
