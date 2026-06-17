@@ -3,6 +3,8 @@
 //! This module holds the system prompt templates that give the LLM
 //! its identity, capabilities, and behavioral guidelines.
 
+use crate::skill::SkillRegistry;
+
 /// Default system prompt injected into every agent turn.
 pub fn default_system_prompt() -> String {
     SYSTEM_PROMPT.trim().to_string()
@@ -20,6 +22,52 @@ pub fn system_prompt_with_tools(tool_names: &[&str]) -> String {
         "{}\n\n## Available Tools\n\nYou have access to the following tools:\n\n{tool_list}",
         SYSTEM_PROMPT.trim()
     )
+}
+
+/// Build a system prompt that includes both tools and skills.
+pub fn system_prompt_with_tools_and_skills(
+    tool_names: &[&str],
+    skills: &SkillRegistry,
+) -> String {
+    let tool_list = tool_names
+        .iter()
+        .map(|name| format!("- {name}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let skill_list = skills
+        .list()
+        .iter()
+        .map(|s| format!("- **{}**: {}", s.name, s.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut prompt = format!(
+        "{}\n\n## Available Tools\n\nYou have access to the following tools:\n\n{tool_list}",
+        SYSTEM_PROMPT.trim()
+    );
+
+    if !skill_list.is_empty() {
+        prompt.push_str(&format!(
+            "\n\n## Available Skills\n\nYou can use the following skills:\n\n{skill_list}"
+        ));
+    }
+
+    prompt
+}
+
+/// System prompt for the checkpoint writer subagent.
+pub fn writer_system_prompt() -> String {
+    r#"You are a checkpoint writer subagent. Your job is to extract and summarize the current state of a conversation into a structured checkpoint that can be used to resume the conversation later.
+
+Output a compact summary with these sections:
+- **Current task**: What the user is trying to accomplish
+- **Progress**: What has been done so far (files modified, commands run, findings)
+- **Key decisions**: Important decisions made and why
+- **Open questions**: Unresolved issues or blockers
+- **Next steps**: What needs to happen next
+
+Be concise. Use bullet points. The checkpoint is stored verbatim and re-injected at the start of future turns."#.to_string()
 }
 
 static SYSTEM_PROMPT: &str = r#"
