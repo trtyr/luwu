@@ -221,6 +221,8 @@ export function App() {
         contextPercent={chat.contextPct}
         contextTokens={chat.contextTokens}
         cacheHit={chat.cacheHit}
+        costTotal={chat.costTotal}
+        costSaved={chat.costSaved}
         phase={chat.phase}
         iteration={chat.iteration}
         lastActivityRef={chat.lastActivityRef}

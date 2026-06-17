@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
-import { computeCachePercent } from '../core/constants.js';
+import { computeCachePercent, formatCost } from '../core/constants.js';
 
 interface StatusLineProps {
   model: string;
@@ -19,6 +19,13 @@ interface StatusLineProps {
   /// "⚡ XX% cached" badge appears next to the context bar so users
   /// can see their actual billing position.
   cacheHit?: number;
+  /// Cumulative effective cost (USD) across the session — what the user
+  /// actually paid with cache hits at the discounted rate. When > 0,
+  /// a "💰 $X.XXX (XX% saved)" badge appears so the cost is visible
+  /// at a glance. Reset on newSession/restoreSession/clearMessages.
+  costTotal?: number;
+  /// Cumulative cost saved by prefix caching (USD). raw - effective.
+  costSaved?: number;
   phase: string;
   iteration?: number;
   lastActivityRef?: React.MutableRefObject<number>;
@@ -81,7 +88,9 @@ function formatTokens(tokens: number): string {
 const SESSION_START = Date.now();
 
 export function StatusLine({
-  model, sessionId, cwd, gitBranch, contextPercent, contextTokens, cacheHit, phase, iteration,
+  model, sessionId, cwd, gitBranch, contextPercent, contextTokens, cacheHit,
+  costTotal = 0, costSaved = 0,
+  phase, iteration,
   lastActivityRef, connected = true,
 }: StatusLineProps) {
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
@@ -219,6 +228,22 @@ export function StatusLine({
           <>
             {' '}
             <Text color={theme.success}>⚡ {cachePct}% cached</Text>
+          </>
+        )}
+
+        {costTotal > 0 && (
+          <>
+            {' '}
+            <Text color={theme.success}>
+              💰 {formatCost(costTotal)}
+              {costSaved > 0 && (() => {
+                const rawCost = costTotal + costSaved;
+                const savedPct = rawCost > 0
+                  ? Math.min(100, Math.round((costSaved / rawCost) * 100))
+                  : 0;
+                return savedPct > 0 ? ` (${savedPct}% saved)` : '';
+              })()}
+            </Text>
           </>
         )}
 

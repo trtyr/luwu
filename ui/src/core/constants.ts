@@ -106,3 +106,116 @@ export function computeCachePercent(
   if (cacheHit < 0) return 0;
   return Math.min(100, Math.round((cacheHit / contextTokens) * 100));
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Cost per million tokens (USD). Used by StatusLine to show real
+// cost spent and cost saved by prefix caching. Updated 2026-06.
+//
+// Sources (approximate, can drift — users can override per-model
+// in their config if needed):
+// - DeepSeek V4: hit $0.0028 / miss $0.14 / output $0.28 per MTok
+//   (1/50 hit ratio is the headline number; output is ~2x miss)
+// - GLM/智谱: hit $0.5 / miss $2.0 / output $2.0 per MTok
+//   (1/4 hit ratio on Coding Plan; output ~= miss)
+// - MiniMax: hit $0.2 / miss $1.0 / output $1.0 per MTok
+//   (1/5 hit ratio; output ~= miss)
+// - OpenAI 4o fallback: hit $0.5 / miss $5.0 / output $15.0 per MTok
+//   (conservative; used when model is unknown)
+//
+// `default` is the fallback for unknown models. The TUI falls back
+// to this when `contextWindowFor` also can't identify the model.
+// ─────────────────────────────────────────────────────────────────
+export interface ModelCost {
+  /// Cost per million cache-hit prompt tokens
+  hit: number;
+  /// Cost per million cache-miss prompt tokens
+  miss: number;
+  /// Cost per million completion tokens
+  output: number;
+}
+
+export const MODEL_COSTS: Record<string, ModelCost> = {
+  deepseek: { hit: 0.0028, miss: 0.14, output: 0.28 },
+  glm: { hit: 0.5, miss: 2.0, output: 2.0 },
+  minimax: { hit: 0.2, miss: 1.0, output: 1.0 },
+  default: { hit: 0.5, miss: 5.0, output: 15.0 },
+};
+
+/// Look up per-million-token cost rates for a model. Matches on
+/// substring (case-insensitive) to cover all naming conventions:
+/// deepseek-chat / deepseek-v4-flash, glm-4.7 / z-ai/glm-4.6,
+/// MiniMax-M3 / abab-6, etc.
+export function getModelCost(model: string): ModelCost {
+  const m = model.toLowerCase();
+  if (m.includes('deepseek')) return MODEL_COSTS.deepseek;
+  if (m.includes('glm') || m.includes('z-')) return MODEL_COSTS.glm;
+  if (m.includes('minimax') || m.includes('abab')) return MODEL_COSTS.minimax;
+  return MODEL_COSTS.default;
+}
+
+export interface CostEstimate {
+  /// Cost with cache applied (hit at hit rate, miss at miss rate)
+  effective: number;
+  /// Cost as if NO caching (all prompt tokens at miss rate)
+  raw: number;
+  /// Amount saved by caching (raw - effective, always >= 0)
+  saved: number;
+  /// Percentage saved (0-100), useful for the badge
+  savedPct: number;
+}
+
+/// Compute cost for a single LLM call's usage stats, in USD.
+///
+/// `prompt_cache_miss_tokens` is reported by DeepSeek (V4 flat fields)
+/// and inferred for GLM/OpenAI (which only report prompt_tokens and
+/// prompt_tokens_details.cached_tokens — for those, miss is computed
+/// as `prompt_tokens - hit`). If neither hit nor miss is known, we
+/// treat the full prompt as miss.
+export function estimateCost(
+  usage: {
+    prompt_cache_hit_tokens?: number;
+    prompt_cache_miss_tokens?: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  },
+  model: string,
+): CostEstimate {
+  const c = getModelCost(model);
+  const hit = usage.prompt_cache_hit_tokens ?? 0;
+  let miss = usage.prompt_cache_miss_tokens ?? 0;
+  const output = usage.completion_tokens ?? 0;
+  const prompt = usage.prompt_tokens ?? 0;
+
+  // If miss wasn't reported but hit and prompt were, infer miss.
+  if (miss === 0 && hit > 0 && prompt > 0) {
+    miss = Math.max(0, prompt - hit);
+  }
+
+  // Effective cost: hit at hit rate, miss at miss rate, output at output rate
+  const effective =
+    (hit / 1_000_000) * c.hit +
+    (miss / 1_000_000) * c.miss +
+    (output / 1_000_000) * c.output;
+
+  // Raw cost: all prompt tokens at miss rate (no cache savings)
+  const totalPrompt = hit + miss;
+  const raw =
+    (totalPrompt / 1_000_000) * c.miss +
+    (output / 1_000_000) * c.output;
+
+  const saved = Math.max(0, raw - effective);
+  const savedPct = raw > 0 ? Math.min(100, Math.round((saved / raw) * 100)) : 0;
+
+  return { effective, raw, saved, savedPct };
+}
+
+/// Format a dollar amount for the status bar badge.
+/// Uses compact notation: <$0.0001 for tiny, $0.003 for small,
+/// $1.23 for normal, $1.2k for large.
+export function formatCost(usd: number): string {
+  if (usd <= 0) return '$0';
+  if (usd < 0.0001) return '<$0.0001';
+  if (usd < 1) return `$${usd.toFixed(usd < 0.01 ? 3 : 2)}`;
+  if (usd < 1000) return `$${usd.toFixed(2)}`;
+  return `$${(usd / 1000).toFixed(1)}k`;
+}

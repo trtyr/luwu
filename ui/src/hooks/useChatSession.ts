@@ -16,7 +16,7 @@ import type {
 import {
   checkHealth, createSession, streamChat, cancelTurn, getModels,
 } from '../services/api.js';
-import { contextWindowFor } from '../core/constants.js';
+import { contextWindowFor, estimateCost } from '../core/constants.js';
 import { useConnection } from './useConnection.js';
 
 let msgCounter = 0;
@@ -72,6 +72,8 @@ export function useChatSession(): ChatSession {
   const [contextPct, setContextPct] = useState(0);
   const [contextTokens, setContextTokens] = useState(0);
   const [cacheHit, setCacheHit] = useState(0);
+  const [costTotal, setCostTotal] = useState(0);
+  const [costSaved, setCostSaved] = useState(0);
   const [iteration, setIteration] = useState(0);
   const [spinnerVerb, setSpinnerVerb] = useState<string | undefined>(undefined);
 
@@ -346,12 +348,22 @@ export function useChatSession(): ChatSession {
             setIteration(ev.iteration || 0);
             if (ev.usage?.prompt_tokens) updateContext(ev.usage.prompt_tokens, model);
             if (ev.usage?.prompt_cache_hit_tokens) setCacheHit(ev.usage.prompt_cache_hit_tokens);
+            if (ev.usage) {
+              const est = estimateCost(ev.usage, model);
+              setCostTotal(prev => prev + est.effective);
+              setCostSaved(prev => prev + est.saved);
+            }
             break;
 
           case 'done':
             immediateSync();
             if (ev.usage?.prompt_tokens) updateContext(ev.usage.prompt_tokens, model);
             if (ev.usage?.prompt_cache_hit_tokens) setCacheHit(ev.usage.prompt_cache_hit_tokens);
+            if (ev.usage) {
+              const est = estimateCost(ev.usage, model);
+              setCostTotal(prev => prev + est.effective);
+              setCostSaved(prev => prev + est.saved);
+            }
             break;
 
           case 'cancelled':
@@ -390,7 +402,8 @@ export function useChatSession(): ChatSession {
   return {
     committedMessages, streamingMessage, staticKey,
     phase, sessionId, error, model, gitBranch,
-    contextPct, contextTokens, cacheHit, iteration, spinnerVerb, connected,
+    contextPct, contextTokens, cacheHit, costTotal, costSaved,
+    iteration, spinnerVerb, connected,
     lastActivityRef,
     setModel, sendMessage, cancel, restoreSession, newSession, clearMessages, abortRef,
   };
