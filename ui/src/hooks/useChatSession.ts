@@ -406,13 +406,24 @@ export function useChatSession(): ChatSession {
         syncToReact();
       }
     } finally {
-      // ── Commit remaining streaming blocks to <Static> ──
+      // CRITICAL ORDER: Clear the throttledSync timer FIRST so a late
+      // text_delta (network reordering) can't fire syncToReact 60ms after
+      // we've cleared streamingMessage and resurrect the same content as a
+      // second committed message.
+      if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
+      // CRITICAL ORDER: Clear streamingMessage BEFORE commitBlocksToStatic.
+      // If commit goes first and React 17 (or any non-batching renderer)
+      // re-renders, the user would see the same content from BOTH the
+      // committed message (in <Static>) AND the still-populated
+      // streamingMessage (in dynamic area) - a brief but ugly double
+      // render. Clearing streaming first guarantees by the time the
+      // committed message hits <Static>, the dynamic area is empty.
+      streamingRef.current = null;
+      setStreamingMessage(null);
+      // Commit remaining streaming blocks to <Static>
       if (blocks.length > committedBlockCount) {
         commitBlocksToStatic(blocks.length);
       }
-      streamingRef.current = null;
-      setStreamingMessage(null);
-
       abortRef.current = null;
       setPhase('ready');
     }
