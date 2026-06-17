@@ -8,17 +8,18 @@
 //   1. tool_completed → commitBlocksToStatic(commitEnd) moves tool blocks
 //      to <Static> immediately
 //   2. text_delta where last text block exceeds MAX_DYNAMIC_LINES or
-//      MAX_DYNAMIC_CHARS → commitTextOverflow() splits: early part goes
-//      to <Static> (enters scrollback), recent part stays in dynamic area.
-//      This is the CRITICAL fix for Ink's clearTerminal nuclear option —
-//      when the dynamic area exceeds terminal rows, Ink erases the whole
-//      screen and rewrites from the top, causing flicker + scroll-jump.
+//      MAX_DYNAMIC_CHARS → commitTextOverflow() calls the pure helper
+//      splitTextForOverflow() to decide where to split, then commits
+//      the early part to <Static> (enters scrollback) while the
+//      recent part stays in the dynamic area. This keeps the dynamic
+//      area bounded at ~15 lines so Ink's clearTerminal nuclear
+//      option (ESC[2J + full rewrite) is never triggered.
 //   3. done event → final commitBlocksToStatic + setStreamingMessage(null)
 //      + setPhase('ready') all batched in the same microtask, so React
 //      renders "new static + empty dynamic" atomically (no intermediate
 //      "dynamic shrinks but no new static" flash).
 //
-// DUPLICATION BUG FIX (commitTextOverflow + currentText trimming):
+// DUPLICATION BUG FIX (splitTextForOverflow + currentText trimming):
 //   `currentText` is the SSE delta accumulator. After commitTextOverflow
 //   splits a text block, `currentText` MUST be trimmed to the recent part.
 //   Otherwise the next flushText() will write the FULL currentText
@@ -28,12 +29,14 @@
 //   times in scrollback. This was the root cause of the "AI reply shown
 //   multiple times" bug.
 //
-// CHAR OFFSET BUG FIX (commitTextOverflow line→char conversion):
+// CHAR OFFSET BUG FIX (splitTextForOverflow line→char conversion):
 //   The splitAt for line-based splitting must be a CHARACTER OFFSET for
 //   text.slice(), not a line index. For a 20-line text, lines.length - 15 = 5
 //   is "5 lines from the start", but text.slice(0, 5) only takes the first
-//   5 CHARACTERS. Fix: sum lines[i].length + 1 for each line skipped to
-//   get the actual char offset where the "recent" part begins.
+//   5 CHARACTERS. Fix: sum lines[i].length + 1 for each skipped line to
+//   get the actual char offset where the "recent" part begins. The pure
+//   helper splitTextForOverflow() in core/textOverflow.ts encodes this
+//   logic and is locked down by tests in tests/textOverflow.test.ts.
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
@@ -44,6 +47,7 @@ import {
 } from '../services/api.js';
 import { contextWindowFor, estimateCost } from '../core/constants.js';
 import { useConnection } from './useConnection.js';
+import { splitTextForOverflow } from '../core/textOverflow.js';
 
 let msgCounter = 0;
 const uid = (): string => `m-${Date.now()}-${msgCounter++}`;
@@ -279,15 +283,18 @@ export function useChatSession(): ChatSession {
     // FIX 1 + DUPLICATION FIX + CHAR OFFSET FIX: Progressive text overflow.
     // ────────────────────────────────────────────────────────────────────
     // When a text block grows beyond MAX_DYNAMIC_LINES (or has more than
-    // MAX_DYNAMIC_CHARS in a single line), split it: the early part is
-    // committed to <Static> (enters scrollback permanently), the recent
-    // part stays in the dynamic area for continued streaming.
+    // MAX_DYNAMIC_CHARS in a single line), the pure helper
+    // splitTextForOverflow() returns null (no split needed) or a
+    // structured { earlyText, recentText } pair. We then commit the
+    // early part to <Static> and keep the recent part in the dynamic
+    // area.
     //
-    // CRITICAL: splitAt must be a CHARACTER OFFSET (for text.slice()),
-    // NOT a line index. For line-based splitting, we sum lines[i].length + 1
-    // for each skipped line to get the actual char position where the
-    // "recent" part begins. The old code used `lines.length - MAX` as the
-    // offset, which only worked if every line was 1 character long.
+    // CRITICAL: splitTextForOverflow returns CHAR OFFSETS, not line
+    // indices. The previous in-place implementation used
+    // `lines.length - MAX_DYNAMIC_LINES` as a char offset, which only
+    // worked if every line was 1 character long. The regression test
+    // in tests/textOverflow.test.ts covers the 20-line × 50-char case
+    // where this bug manifested.
     //
     // DUPLICATION BUG FIX: After split, `currentText` MUST be trimmed
     // to the recent part. The SSE delta accumulator `currentText` still
@@ -312,53 +319,21 @@ export function useChatSession(): ChatSession {
       if (lastTextIdx < 0) return;
 
       const lastText = blocks[lastTextIdx] as { type: 'text'; text: string };
-      const lines = lastText.text.split('\n');
 
-      // Decide where to split (or skip if not overflow).
-      // Two overflow triggers:
-      //   (a) many lines → split by line count, keep last MAX_DYNAMIC_LINES
-      //   (b) single long line → split at last \n before char budget
-      let splitAt: number;
-      if (lines.length > MAX_DYNAMIC_LINES) {
-        // ── LINE-BASED SPLIT (must be char offset, not line index!) ──
-        // For "lines.length - MAX_DYNAMIC_LINES" we want to keep the last
-        // MAX lines. We need the CHAR OFFSET where those lines start.
-        // Sum each skipped line's length + 1 (for the \n separator).
-        // Example: "a\nbb\nccc\ndddd" split by \n = ["a","bb","ccc","dddd"]
-        //   lines.length=4, keep last 2 lines → skip 2 lines → 1+1+2+1=5
-        //   text.slice(0, 5) = "a\nbb\n" ← correct early part
-        //   text.slice(5) = "ccc\ndddd" ← correct recent part
-        const skipLines = lines.length - MAX_DYNAMIC_LINES;
-        let charOffset = 0;
-        for (let i = 0; i < skipLines; i++) {
-          charOffset += lines[i].length + 1; // +1 for the \n separator
-        }
-        splitAt = charOffset;
-      } else if (lastText.text.length > MAX_DYNAMIC_CHARS) {
-        // Single-line overflow: find the last \n before the char budget
-        // so we don't cut a word in half. Fallback to char-budget if no \n.
-        const charBudget = lastText.text.length - MAX_DYNAMIC_CHARS;
-        let lastNewline = -1;
-        for (let i = 0; i < charBudget && i < lastText.text.length; i++) {
-          if (lastText.text[i] === '\n') lastNewline = i;
-        }
-        splitAt = lastNewline >= 0 ? lastNewline + 1 : charBudget;
-      } else {
-        return; // not overflow yet
-      }
-
-      if (splitAt <= 0 || splitAt >= lastText.text.length) return;
-
-      const earlyText = lastText.text.slice(0, splitAt);
-      const recentText = lastText.text.slice(splitAt);
-
-      if (earlyText.length === 0 || recentText.length === 0) return;
+      // Delegate the line/char math to the pure helper. Returns null
+      // when no split is needed, or { earlyText, recentText } otherwise.
+      const split = splitTextForOverflow(
+        lastText.text,
+        MAX_DYNAMIC_LINES,
+        MAX_DYNAMIC_CHARS,
+      );
+      if (!split) return;
 
       // Replace the last text block with the recent part
-      blocks[lastTextIdx] = { type: 'text', text: recentText };
+      blocks[lastTextIdx] = { type: 'text', text: split.recentText };
 
       // Insert a new block for the early part BEFORE the recent part
-      blocks.splice(lastTextIdx, 0, { type: 'text', text: earlyText } as AssistantBlock);
+      blocks.splice(lastTextIdx, 0, { type: 'text', text: split.earlyText } as AssistantBlock);
 
       // Commit blocks[committedBlockCount..lastTextIdx+1] to <Static>.
       // After this, committedBlockCount = lastTextIdx + 1, and the
@@ -371,7 +346,7 @@ export function useChatSession(): ChatSession {
       // recent block, and the next commitTextOverflow() will re-commit
       // the SAME early part to <Static> — causing the same content to
       // appear 2-3 times in scrollback.
-      currentText = recentText;
+      currentText = split.recentText;
     };
 
     // ── Throttle: batch React state updates to prevent flickering ──
