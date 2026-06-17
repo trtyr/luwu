@@ -191,7 +191,7 @@ impl SkillRegistry {
         let yaml_str = &rest[..close_pos];
         let body = rest[close_pos + 4..].trim().to_string();
 
-        let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml_str)
+        let frontmatter: SkillFrontmatter = serde_yml::from_str(yaml_str)
             .map_err(|e| LuwuError::Config(format!("Invalid SKILL.md frontmatter: {e}")))?;
 
         Ok((frontmatter, body))

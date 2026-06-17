@@ -139,7 +139,28 @@ pub fn router(state: AppState) -> Router {
             "/v1/skills/{name}",
             axum::routing::get(handlers::get_skill_detail),
         )
-        .layer(CorsLayer::permissive())
+        .layer(CorsLayer::new()
+            // The TUI connects as a native client (no browser origin), but if
+            // a browser dashboard or web UI is ever added, restrict origins
+            // to local development hosts instead of allowing any origin.
+            .allow_origin([
+                "http://localhost:51740".parse().unwrap(),
+                "http://127.0.0.1:51740".parse().unwrap(),
+                "http://localhost:5173".parse().unwrap(),  // Vite dev server default
+                "http://127.0.0.1:5173".parse().unwrap(),
+            ])
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::DELETE,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::ACCEPT,
+            ])
+            .max_age(std::time::Duration::from_secs(3600)))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(shared.clone(), heartbeat_mw))
         .with_state(shared)
