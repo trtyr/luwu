@@ -131,7 +131,15 @@ export function App() {
       case 'help':
         return <HelpOverlay onClose={() => setOverlay(null)} />;
       case 'stats':
-        return <StatsOverlay sessionId={chat.sessionId ?? ''} model={chat.model} contextPercent={chat.contextPct} />;
+        return (
+          <StatsOverlay
+            sessionId={chat.sessionId ?? ''}
+            model={chat.model}
+            contextPercent={chat.contextPct}
+            costTotal={chat.costTotal}
+            costSaved={chat.costSaved}
+          />
+        );
       case 'skills':
         return <SkillsOverlay />;
       case 'sessions':

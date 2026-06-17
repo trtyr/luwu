@@ -167,12 +167,8 @@ export function StatusLine({
   // Cache-hit badge — only show when we have at least one hit AND a
   // total to compare against. Avoids noisy "⚡ 100% cached" when
   // contextTokens is 0 or when no hit data has arrived yet.
-  // Cache-hit badge — only show when we have at least one hit AND a
-  // total to compare against. See computeCachePercent for edge cases.
+  // See computeCachePercent for edge cases (negative hit, zero tokens).
   const cachePct = computeCachePercent(cacheHit, contextTokens);
-    cacheHit && contextTokens && contextTokens > 0
-      ? Math.min(100, Math.round((cacheHit / contextTokens) * 100))
-      : 0;
 
   return (
     <Box flexDirection="column">

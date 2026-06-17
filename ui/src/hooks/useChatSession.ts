@@ -44,6 +44,13 @@ export interface ChatSession {
   /// Running total of prefix-cache hits across the session. Surfaces in
   /// the status bar as "⚡ XX% cached" when prompt_tokens > 0.
   cacheHit: number;
+  /// Cumulative effective cost (USD) across the session — what the user
+  /// actually paid, with cache hits at the discounted rate. Reset on
+  /// newSession/restoreSession/clearMessages.
+  costTotal: number;
+  /// Cumulative cost saved by prefix caching (USD). raw - effective.
+  /// Reset alongside costTotal.
+  costSaved: number;
   iteration: number;
   spinnerVerb: string | undefined;
   connected: boolean;
@@ -123,6 +130,11 @@ export function useChatSession(): ChatSession {
     setStreamingMessage(null);
     setCommittedMessages([]);
     setStaticKey(k => k + 1);
+    // Reset all per-turn cost/cache counters so a /clear doesn't keep
+    // showing the previous conversation's cost in the status bar.
+    setCacheHit(0);
+    setCostTotal(0);
+    setCostSaved(0);
   }, []);
 
   const restoreSession = useCallback((id: string) => {
@@ -132,6 +144,7 @@ export function useChatSession(): ChatSession {
     }
     setSessionId(id);
     setContextPct(0); setContextTokens(0); setIteration(0); setSpinnerVerb(undefined);
+    setCacheHit(0); setCostTotal(0); setCostSaved(0);
     setPhase('ready');
     streamingRef.current = null;
     setStreamingMessage(null);
@@ -147,6 +160,7 @@ export function useChatSession(): ChatSession {
       if (sessionId) cancelTurn(sessionId).catch(() => {});
     }
     setContextPct(0); setContextTokens(0); setIteration(0); setSpinnerVerb(undefined);
+    setCacheHit(0); setCostTotal(0); setCostSaved(0);
     setPhase('connecting');
     streamingRef.current = null;
     setStreamingMessage(null);
@@ -359,11 +373,16 @@ export function useChatSession(): ChatSession {
             immediateSync();
             if (ev.usage?.prompt_tokens) updateContext(ev.usage.prompt_tokens, model);
             if (ev.usage?.prompt_cache_hit_tokens) setCacheHit(ev.usage.prompt_cache_hit_tokens);
-            if (ev.usage) {
-              const est = estimateCost(ev.usage, model);
-              setCostTotal(prev => prev + est.effective);
-              setCostSaved(prev => prev + est.saved);
-            }
+            // NOTE: costTotal/costSaved are NOT accumulated here. The
+            // backend's `done` event carries `total_usage` (cumulative
+            // across all iterations), while `iteration_end` carries
+            // `last_usage` (per-iteration). The TUI accumulates from
+            // iteration_end only — summing per-iteration costs gives
+            // the same total as the backend's cumulative done.usage.
+            // Accumulating from both would double-count (e.g. for a
+            // 3-iteration turn: 3*iteration_end + 1*done = 4x the real
+            // cost). Context/cache fields are fine to overwrite since
+            // they're "latest value", not "cumulative".
             break;
 
           case 'cancelled':
