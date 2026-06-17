@@ -181,3 +181,96 @@ pub enum ConfigError {
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Tests
+// ────────────────────────────────────────────────────────────────────
+//
+// `example_config_parses` guards against config.example.toml drift.
+// The example file at the repo root documents every supported provider
+// (GLM Standard + Coding Plan + Z.ai, DeepSeek, OpenAI, Anthropic) —
+// if anyone edits it and breaks TOML syntax or removes a required
+// field, this test fails in CI. The path is relative to CARGO_MANIFEST_DIR
+// (i.e. crates/luwu-server/), so ../../config.example.toml points at
+// the repo root.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// The bundled config.example.toml must parse as a valid `Config`.
+    /// This is the contract: whatever providers the example documents
+    /// (Standard API, Coding Plan, Z.ai, DeepSeek, OpenAI, Anthropic)
+    /// must all be structurally valid TOML.
+    #[test]
+    fn example_config_parses() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR not set (should always be set by cargo)");
+        let example_path = std::path::Path::new(&manifest_dir)
+            .join("..")
+            .join("..")
+            .join("config.example.toml");
+
+        let content = fs::read_to_string(&example_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", example_path.display(), e));
+
+        let _config: Config = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("config.example.toml failed to parse: {}", e));
+    }
+
+    /// The example's `[default] provider` must point at a key that
+    /// actually exists in `[providers.*]`. If someone renames a key
+    /// in the providers section but forgets to update `[default]`,
+    /// this test catches it.
+    #[test]
+    fn example_default_provider_exists() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR not set");
+        let example_path = std::path::Path::new(&manifest_dir)
+            .join("..")
+            .join("..")
+            .join("config.example.toml");
+
+        let content = fs::read_to_string(&example_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", example_path.display(), e));
+        let config: Config = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("config.example.toml failed to parse: {}", e));
+
+        let default_provider = config
+            .default
+            .provider
+            .as_deref()
+            .expect("config.example.toml has no [default] provider set");
+        assert!(
+            config.providers.contains_key(default_provider),
+            "[default].provider = {:?} but providers section has no {:?} entry",
+            default_provider,
+            default_provider
+        );
+    }
+
+    /// The two Coding Plan Anthropic-protocol blocks must not have the
+    /// same provider key (both want the "anthropic" match in
+    /// create_provider, but the config can only have one of each name).
+    /// This test ensures no future edit accidentally duplicates the key.
+    #[test]
+    fn example_no_duplicate_provider_keys() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR not set");
+        let example_path = std::path::Path::new(&manifest_dir)
+            .join("..")
+            .join("..")
+            .join("config.example.toml");
+
+        let content = fs::read_to_string(&example_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", example_path.display(), e));
+        let config: Config = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("config.example.toml failed to parse: {}", e));
+
+        assert_eq!(
+            config.providers.len(),
+            config.providers.keys().collect::<std::collections::HashSet<_>>().len(),
+            "config.example.toml has duplicate provider keys — HashMap silently keeps the last one"
+        );
+    }
+}

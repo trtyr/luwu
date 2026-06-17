@@ -34,7 +34,7 @@
 
 # Default provider & model (used when no provider is specified at request time).
 [default]
-provider = "glm-coding-anthropic"  # key into [providers.*] below
+provider = "anthropic"             # 必须叫 "anthropic" 才会用 AnthropicProvider（GLM Coding Plan + Anthropic 协议）
 model    = "glm-4.7"               # optional default model
 
 # ── GLM Coding Plan · Anthropic 协议 (推荐) ─────────────────
