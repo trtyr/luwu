@@ -17,6 +17,7 @@ import {
   checkHealth, createSession, streamChat, cancelTurn, getModels,
 } from '../services/api.js';
 import { contextWindowFor } from '../core/constants.js';
+import { useConnection } from './useConnection.js';
 
 let msgCounter = 0;
 const uid = (): string => `m-${Date.now()}-${msgCounter++}`;
@@ -40,6 +41,9 @@ export interface ChatSession {
   gitBranch: string | null;
   contextPct: number;
   contextTokens: number;
+  /// Running total of prefix-cache hits across the session. Surfaces in
+  /// the status bar as "⚡ XX% cached" when prompt_tokens > 0.
+  cacheHit: number;
   iteration: number;
   spinnerVerb: string | undefined;
   connected: boolean;
@@ -67,6 +71,7 @@ export function useChatSession(): ChatSession {
   const [model, setModel] = useState('glm-4.7');
   const [contextPct, setContextPct] = useState(0);
   const [contextTokens, setContextTokens] = useState(0);
+  const [cacheHit, setCacheHit] = useState(0);
   const [iteration, setIteration] = useState(0);
   const [spinnerVerb, setSpinnerVerb] = useState<string | undefined>(undefined);
 
@@ -340,11 +345,13 @@ export function useChatSession(): ChatSession {
           case 'iteration_end':
             setIteration(ev.iteration || 0);
             if (ev.usage?.prompt_tokens) updateContext(ev.usage.prompt_tokens, model);
+            if (ev.usage?.prompt_cache_hit_tokens) setCacheHit(ev.usage.prompt_cache_hit_tokens);
             break;
 
           case 'done':
             immediateSync();
             if (ev.usage?.prompt_tokens) updateContext(ev.usage.prompt_tokens, model);
+            if (ev.usage?.prompt_cache_hit_tokens) setCacheHit(ev.usage.prompt_cache_hit_tokens);
             break;
 
           case 'cancelled':
@@ -383,7 +390,7 @@ export function useChatSession(): ChatSession {
   return {
     committedMessages, streamingMessage, staticKey,
     phase, sessionId, error, model, gitBranch,
-    contextPct, contextTokens, iteration, spinnerVerb, connected,
+    contextPct, contextTokens, cacheHit, iteration, spinnerVerb, connected,
     lastActivityRef,
     setModel, sendMessage, cancel, restoreSession, newSession, clearMessages, abortRef,
   };

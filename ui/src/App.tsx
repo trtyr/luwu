@@ -220,6 +220,7 @@ export function App() {
         gitBranch={chat.gitBranch}
         contextPercent={chat.contextPct}
         contextTokens={chat.contextTokens}
+        cacheHit={chat.cacheHit}
         phase={chat.phase}
         iteration={chat.iteration}
         lastActivityRef={chat.lastActivityRef}

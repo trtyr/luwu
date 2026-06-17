@@ -1,0 +1,104 @@
+# luwu configuration example
+# ────────────────────────────────────────────────────────────
+# Copy this file to ~/.luwu/config.toml and fill in your API keys.
+# All providers listed below are templates — comment out the ones
+# you don't use, and set `[default] provider = "<key name>"` to
+# pick the active one.
+#
+# Provider-key naming convention:
+#   • Key name "anthropic"  → uses AnthropicProvider (Anthropic Messages API format)
+#   • Any other key name    → uses OpenAiProvider     (OpenAI Chat Completions format)
+# This is how you route to providers that expose one of these two
+# protocols — e.g. GLM's Anthropic-compatible endpoint is reached
+# by key "anthropic" + base_url = "https://open.bigmodel.cn/api/anthropic".
+# ────────────────────────────────────────────────────────────
+
+# Default provider & model (used when no provider is specified at request time).
+[default]
+provider = "deepseek"        # key into [providers.*] below
+model = "deepseek-chat"      # optional default model
+
+# ── DeepSeek ────────────────────────────────────────────────
+# Standard OpenAI-compatible endpoint.
+# Special: V4 thinking mode requires `reasoning_content` to be
+# echoed back across multi-turn tool calls — luwu handles this
+# automatically (commit 311d7e1). Cache fields (flat):
+#   prompt_cache_hit_tokens  (1/50 price)
+#   prompt_cache_miss_tokens (full price)
+[providers.deepseek]
+api_key  = "sk-..."
+base_url = "https://api.deepseek.com/v1"
+model    = "deepseek-chat"
+# temperature = 0.7      # optional, provider default
+# max_tokens  = 8192     # optional, provider default
+
+# ── GLM (Zhipu) — Standard API, OpenAI protocol ─────────────
+# 国内按量付费。直接走 OpenAI 协议。
+# GLM-4.7/5/5.1/5.2 默认开启 thinking。
+# Cache 字段是嵌套的 (usage.prompt_tokens_details.cached_tokens)，
+# luwu 自动读取 (commit pending)。
+[providers.glm]
+api_key  = "..."
+base_url = "https://open.bigmodel.cn/api/paas/v4/"
+model    = "glm-4.7"
+
+# ── GLM (Zhipu) — Standard API, Anthropic protocol ──────────
+# 同样按量付费，但走 Anthropic Messages API 格式。
+# 注意：provider key 必须叫 "anthropic" 才会被识别为 AnthropicProvider。
+[providers.anthropic]
+api_key  = "..."
+base_url = "https://open.bigmodel.cn/api/anthropic"
+model    = "glm-4.7"
+
+# ── GLM (Zhipu) — Coding Plan, OpenAI protocol ──────────────
+# ⚠️  法律风险：Coding Plan 套餐官方仅支持 Cursor/Claude Code/Cline
+# 等指定工具。luwu 不在支持列表中——技术上能调通，但：
+#   1. 可能触发智谱风控 → 账号封禁风险
+#   2. Coding Plan 额度可能不被消耗 → 走按量付费扣余额
+#   3. 违反智谱 GLM Coding Plan 用户协议
+# 用不用由你自己决定。生产环境建议用 Standard API 替代。
+# 优势：Coding Plan 端点默认 `clear_thinking: false`（保留式思考），
+# 缓存命中率比 Standard API 高 1/4-1/5。
+[providers.glm-coding]
+api_key  = "..."
+base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+model    = "glm-4.7"
+
+# ── Z.ai — 海外版 ───────────────────────────────────────────
+# 智谱的海外平台，API Key 跟国内版不互通。
+# 模型列表略不同（GLM-4.5 系列最早在这里发布）。
+[providers.zai]
+api_key  = "..."
+base_url = "https://api.z.ai/api/paas/v4/"
+model    = "glm-4.5"
+
+# ── Z.ai Coding Plan ────────────────────────────────────────
+# 海外版 Coding Plan，同样的 TOS 风险（见上方 glm-coding 说明）。
+[providers.zai-coding]
+api_key  = "..."
+base_url = "https://api.z.ai/api/coding/paas/v4"
+model    = "glm-4.5"
+
+# ── OpenAI 官方 ────────────────────────────────────────────
+[providers.openai]
+api_key  = "sk-..."
+base_url = "https://api.openai.com/v1"
+# ── Anthropic 官方 ──────────────────────────────────────────
+# 注意：provider key 必须叫 "anthropic" 才会用 AnthropicProvider。
+# 这意味着你不能同时配置 [providers.anthropic]（GLM 兼容端点）和
+# Anthropic 官方端点——两者都需要 key 叫 "anthropic"，会冲突。
+# 解决方案：把 GLM 的改成别的名字（如 "glm-anthropic"）然后通过
+# `provider` 请求参数临时指定；或改用 OpenAI 协议的转发代理。
+[providers.anthropic]
+api_key  = "sk-ant-..."
+base_url = "https://api.anthropic.com"
+model    = "claude-sonnet-4-5"
+
+# ────────────────────────────────────────────────────────────
+# Logging
+# ────────────────────────────────────────────────────────────
+[logging]
+level  = "info"        # trace|debug|info|warn|error
+format = "pretty"      # pretty|json
+# file   = "/tmp/luwu.log"  # optional: daily-rotated file output
+#                         # 集成模式（单二进制）下默认写到 ~/.luwu/logs/luwu.log

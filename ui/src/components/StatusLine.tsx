@@ -13,6 +13,11 @@ interface StatusLineProps {
   gitBranch: string | null;
   contextPercent: number;
   contextTokens?: number;
+  /// Running total of prefix-cache hits (DeepSeek flat + GLM nested
+  /// both flow through to this). When > 0 and < contextTokens, a
+  /// "⚡ XX% cached" badge appears next to the context bar so users
+  /// can see their actual billing position.
+  cacheHit?: number;
   phase: string;
   iteration?: number;
   lastActivityRef?: React.MutableRefObject<number>;
@@ -75,7 +80,7 @@ function formatTokens(tokens: number): string {
 const SESSION_START = Date.now();
 
 export function StatusLine({
-  model, sessionId, cwd, gitBranch, contextPercent, contextTokens, phase, iteration,
+  model, sessionId, cwd, gitBranch, contextPercent, contextTokens, cacheHit, phase, iteration,
   lastActivityRef, connected = true,
 }: StatusLineProps) {
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
@@ -149,6 +154,13 @@ export function StatusLine({
   }
 
   const tokenStr = contextTokens && contextTokens > 0 ? formatTokens(contextTokens) : null;
+  // Cache-hit badge — only show when we have at least one hit AND a
+  // total to compare against. Avoids noisy "⚡ 100% cached" when
+  // contextTokens is 0 or when no hit data has arrived yet.
+  const cachePct =
+    cacheHit && contextTokens && contextTokens > 0
+      ? Math.min(100, Math.round((cacheHit / contextTokens) * 100))
+      : 0;
 
   return (
     <Box flexDirection="column">
@@ -200,6 +212,12 @@ export function StatusLine({
 
         <Text color={ctxColor}>[{bar}] {contextPercent}%</Text>
         {tokenStr && <Text color={theme.subtle}> {tokenStr}</Text>}
+        {cachePct > 0 && (
+          <>
+            {' '}
+            <Text color={theme.success}>⚡ {cachePct}% cached</Text>
+          </>
+        )}
 
         {iteration !== undefined && iteration > 0 && (
           <>

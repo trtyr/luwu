@@ -302,14 +302,25 @@ async fn consume_stream(
         // Usage info is sometimes in the final chunk.
         if let Some(usage) = chunk.usage {
             received_data = true;
+            // Cache hit/miss resolution order (precedence: flat > nested):
+            // 1. DeepSeek V4 flat fields (prompt_cache_hit_tokens) — most accurate
+            //    because DeepSeek distinguishes hit vs miss.
+            // 2. OpenAI/GLM nested prompt_tokens_details.cached_tokens — only hit
+            //    count available; miss stays 0 (the non-cached portion =
+            //    prompt_tokens - cached_tokens is the uncached prompt, not a
+            //    "miss from cache hit price" — there's no cache-miss tier on GLM).
+            // 3. Plain OpenAI: both default to 0.
+            let prompt_cache_hit_tokens = usage
+                .prompt_cache_hit_tokens
+                .or_else(|| usage.prompt_tokens_details.as_ref().map(|d| d.cached_tokens))
+                .unwrap_or(0);
+            let prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens.unwrap_or(0);
             let event = LlmEvent::Done(LlmUsage {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 total_tokens: usage.total_tokens,
-                // DeepSeek V4 reports these; OpenAI/most other providers
-                // return None and we default to 0.
-                prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens.unwrap_or(0),
-                prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens.unwrap_or(0),
+                prompt_cache_hit_tokens,
+                prompt_cache_miss_tokens,
             });
             let _ = tx.send(Ok(event)).await;
         }
@@ -549,13 +560,38 @@ struct FunctionDelta {
 /// caching) add `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`;
 /// OpenAI itself does not. Both fields are optional so the same struct
 /// works for both.
+/// OpenAI `usage` object. Three cache-format families are supported:
+///
+/// 1. **OpenAI/GLM nested**: `prompt_tokens_details.cached_tokens`
+///    (the standard OpenAI shape, used by GLM for prefix cache hits).
+/// 2. **DeepSeek V4 flat**: `prompt_cache_hit_tokens` + `prompt_cache_miss_tokens`
+///    (DeepSeek's split-hit/miss form, with cache-miss at full price and
+///    cache-hit at ~1/50 price on V4-Flash).
+/// 3. **Plain OpenAI**: no cache fields at all (everything defaults to 0).
+///
+/// All three deserialize into the same `LlmUsage` and the consume_stream
+/// mapping below reads from whichever field is present.
 #[derive(Debug, Deserialize)]
 struct Usage {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
+    /// OpenAI/GLM nested cache hit count (under `prompt_tokens_details`).
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    /// DeepSeek V4 flat cache hit count.
     #[serde(default)]
     prompt_cache_hit_tokens: Option<u64>,
+    /// DeepSeek V4 flat cache miss count.
     #[serde(default)]
     prompt_cache_miss_tokens: Option<u64>,
+}
+
+/// OpenAI-standard `prompt_tokens_details` sub-object. GLM puts the
+/// prefix-cache hit count here as `cached_tokens`; the field is optional
+/// so providers that don't report it simply deserialize to None.
+#[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: u64,
 }

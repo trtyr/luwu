@@ -39,7 +39,19 @@ export interface StreamEvent {
   message?: string;
   iteration?: number;
   assistant_text?: string;
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    /// Prefix-cache hits — DeepSeek V4 (flat) and GLM/OpenAI (via
+    /// prompt_tokens_details.cached_tokens on the backend) both map here.
+    /// Used by the TUI status bar to show the cache-hit badge.
+    prompt_cache_hit_tokens?: number;
+    /// DeepSeek V4 only — tokens that missed the prefix cache.
+    /// GLM/OpenAI standard format does not report this; for those
+    /// providers, miss is implicit (prompt_tokens - cached_tokens).
+    prompt_cache_miss_tokens?: number;
+  };
 }
 
 export interface ModelInfo {
