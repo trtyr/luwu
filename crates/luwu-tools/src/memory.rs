@@ -165,7 +165,7 @@ fn touched_files(store: &dyn MemoryBackend) -> String {
         return "No files referenced.".to_string();
     }
     let mut sorted: Vec<_> = counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|k| std::cmp::Reverse(k.1));
     let mut out = String::from("Files touched:\n");
     for (p, c) in sorted {
         out.push_str(&format!("  {p} ({c}x)\n"));
