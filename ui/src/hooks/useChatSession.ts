@@ -18,7 +18,7 @@
 //      renders "new static + empty dynamic" atomically (no intermediate
 //      "dynamic shrinks but no new static" flash).
 //
-// CRITICAL BUG FIX (commitTextOverflow + currentText trimming):
+// DUPLICATION BUG FIX (commitTextOverflow + currentText trimming):
 //   `currentText` is the SSE delta accumulator. After commitTextOverflow
 //   splits a text block, `currentText` MUST be trimmed to the recent part.
 //   Otherwise the next flushText() will write the FULL currentText
@@ -27,6 +27,13 @@
 //   early part to <Static> — causing the same content to appear 2-3
 //   times in scrollback. This was the root cause of the "AI reply shown
 //   multiple times" bug.
+//
+// CHAR OFFSET BUG FIX (commitTextOverflow line→char conversion):
+//   The splitAt for line-based splitting must be a CHARACTER OFFSET for
+//   text.slice(), not a line index. For a 20-line text, lines.length - 15 = 5
+//   is "5 lines from the start", but text.slice(0, 5) only takes the first
+//   5 CHARACTERS. Fix: sum lines[i].length + 1 for each line skipped to
+//   get the actual char offset where the "recent" part begins.
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
@@ -233,6 +240,16 @@ export function useChatSession(): ChatSession {
     streamingRef.current = assistantMsg;
     setStreamingMessage(assistantMsg);
 
+    // FIX 3 (review): Set thinking state IMMEDIATELY after committing
+    // the user message so the UI shows "thinking" spinner before the
+    // first text_delta arrives. Previously these were missing, leaving
+    // the user staring at a "ready" state (no spinner) from message
+    // send until the first byte of AI output — could be several seconds
+    // of confusion ("did it receive my message?").
+    setPhase('thinking');
+    setIteration(0);
+    setSpinnerVerb(undefined);
+
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -259,19 +276,18 @@ export function useChatSession(): ChatSession {
       committedBlockCount = endIdx;
     };
 
-    // FIX 1 + DUPLICATION FIX: Progressive text overflow commit.
+    // FIX 1 + DUPLICATION FIX + CHAR OFFSET FIX: Progressive text overflow.
     // ────────────────────────────────────────────────────────────────────
     // When a text block grows beyond MAX_DYNAMIC_LINES (or has more than
     // MAX_DYNAMIC_CHARS in a single line), split it: the early part is
     // committed to <Static> (enters scrollback permanently), the recent
     // part stays in the dynamic area for continued streaming.
     //
-    // This is the CRITICAL fix for Ink's clearTerminal nuclear option:
-    // when the dynamic area exceeds terminal rows, Ink erases the whole
-    // screen and rewrites from the top, causing flicker + scroll-jump.
-    // Long AI explanations (e.g. 60 lines of Markdown) without any tool
-    // calls previously caused this. Now the dynamic area stays bounded
-    // at MAX_DYNAMIC_LINES regardless of total response length.
+    // CRITICAL: splitAt must be a CHARACTER OFFSET (for text.slice()),
+    // NOT a line index. For line-based splitting, we sum lines[i].length + 1
+    // for each skipped line to get the actual char position where the
+    // "recent" part begins. The old code used `lines.length - MAX` as the
+    // offset, which only worked if every line was 1 character long.
     //
     // DUPLICATION BUG FIX: After split, `currentText` MUST be trimmed
     // to the recent part. The SSE delta accumulator `currentText` still
@@ -280,8 +296,7 @@ export function useChatSession(): ChatSession {
     // early part). Without trimming, every new text_delta would
     // resurrect the committed content in the recent block, and the
     // next split would re-commit it to <Static> — causing the AI reply
-    // to appear 2-3 times in scrollback. This is the root cause of the
-    // "AI reply shown multiple times" bug.
+    // to appear 2-3 times in scrollback.
     // ────────────────────────────────────────────────────────────────────
     const MAX_DYNAMIC_LINES = 15;
     const MAX_DYNAMIC_CHARS = 2000;
@@ -305,7 +320,20 @@ export function useChatSession(): ChatSession {
       //   (b) single long line → split at last \n before char budget
       let splitAt: number;
       if (lines.length > MAX_DYNAMIC_LINES) {
-        splitAt = lines.length - MAX_DYNAMIC_LINES;
+        // ── LINE-BASED SPLIT (must be char offset, not line index!) ──
+        // For "lines.length - MAX_DYNAMIC_LINES" we want to keep the last
+        // MAX lines. We need the CHAR OFFSET where those lines start.
+        // Sum each skipped line's length + 1 (for the \n separator).
+        // Example: "a\nbb\nccc\ndddd" split by \n = ["a","bb","ccc","dddd"]
+        //   lines.length=4, keep last 2 lines → skip 2 lines → 1+1+2+1=5
+        //   text.slice(0, 5) = "a\nbb\n" ← correct early part
+        //   text.slice(5) = "ccc\ndddd" ← correct recent part
+        const skipLines = lines.length - MAX_DYNAMIC_LINES;
+        let charOffset = 0;
+        for (let i = 0; i < skipLines; i++) {
+          charOffset += lines[i].length + 1; // +1 for the \n separator
+        }
+        splitAt = charOffset;
       } else if (lastText.text.length > MAX_DYNAMIC_CHARS) {
         // Single-line overflow: find the last \n before the char budget
         // so we don't cut a word in half. Fallback to char-budget if no \n.
@@ -419,42 +447,56 @@ export function useChatSession(): ChatSession {
             break;
 
           case 'reasoning_delta':
+            // FIX 4 (review): Use throttledSync (not syncToReact) — reasoning
+            // can be high-frequency (few KB per response), and direct
+            // syncToReact would cause dozens of React re-renders per
+            // second. 60ms throttle is invisible to the user but saves
+            // significant work.
             accReasoning += ev.delta || '';
-            syncToReact();
+            throttledSync();
             break;
 
           case 'tool_call': {
             // Flush any accumulated text before starting a new tool
             flushText();
             currentText = '';
-            const tc = ev.tool_call;
-            const toolBlock: AssistantBlock = {
-              type: 'tool',
-              id: tc.id,
-              name: tc.name,
-              arguments: tc.arguments,
-              status: 'running',
-            };
-            blocks.push(toolBlock);
-            toolIndexMap.set(tc.name + ':' + tc.id, blocks.length - 1);
+            // StreamEvent carries tool identity as flat fields (name/tool_name
+            // + arguments/args) — NOT a nested tool_call object. The
+            // AssistantBlock tool variant wraps everything in `tool: ToolCallInfo`.
+            const name: string = ev.name || ev.tool_name || 'unknown';
+            const rawArgs = ev.arguments ?? ev.args;
+            const args: string = typeof rawArgs === 'string'
+              ? rawArgs
+              : JSON.stringify(rawArgs ?? {});
+            const toolInfo: ToolCallInfo = { name, args, status: 'running' };
+            blocks.push({ type: 'tool', tool: toolInfo });
+            // Key by tool name (the identifier the backend uses to pair
+            // tool_call with tool_completed). If the same tool name
+            // appears multiple times in one turn, the LAST one wins —
+            // acceptable since the backend invokes each tool at most once
+            // per iteration.
+            toolIndexMap.set(name, blocks.length - 1);
             syncToReact();
             break;
           }
 
           case 'tool_completed': {
-            // Update the matching tool block with the result
-            const tcId = ev.tool_call_id;
-            const idx = toolIndexMap.get(tcId || '');
+            // StreamEvent carries tool identity as flat fields (name/tool_name)
+            // + result (result/output). The matching tool block in `blocks`
+            // wraps the ToolCallInfo inside `.tool`, so we access
+            // blocks[idx].tool.result / .tool.status.
+            const name: string = ev.name || ev.tool_name || '';
+            const idx = toolIndexMap.get(name);
             if (idx !== undefined && blocks[idx] && blocks[idx].type === 'tool') {
-              const toolBlock = blocks[idx] as AssistantBlock & { type: 'tool' };
-              // FIX 3 (review): Detect tool errors from ev.error flag
-              // and result keyword matching — set status='error' for
-              // red coloring instead of always 'done' green.
-              const resultStr = ev.result || '';
-              const isError = ev.error === true
-                || /\b(error|panicked|no such file|not found|failed|permission denied)\b/i.test(resultStr);
-              toolBlock.result = resultStr;
-              toolBlock.status = isError ? 'error' : 'done';
+              const resultStr: string = ev.result || ev.output || '';
+              // FIX 3 (review): Detect tool errors via keyword matching on
+              // the result string. The StreamEvent type doesn't have an
+              // `error` field, so we rely on substring detection. This
+              // sets status='error' for red coloring instead of always
+              // defaulting to 'done' green.
+              const isError = /\b(error|panicked|no such file|not found|failed|permission denied)\b/i.test(resultStr);
+              blocks[idx].tool.result = resultStr;
+              blocks[idx].tool.status = isError ? 'error' : 'done';
             }
             // Commit blocks[0..idx+1] to <Static> as a partial assistant
             // message — the tool call + its result enter scrollback
