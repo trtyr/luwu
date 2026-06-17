@@ -55,6 +55,19 @@ pub enum ContentPart {
         #[serde(default)]
         is_error: bool,
     },
+
+    /// Reasoning/thinking content from the model.
+    ///
+    /// Models like DeepSeek-V4 (with thinking mode enabled) and GLM-4.7
+    /// emit chain-of-thought via a separate `reasoning_content` field.
+    /// **DeepSeek requires this to be passed back in the assistant
+    /// message of subsequent turns when the message also contains tool
+    /// calls** — omitting it causes a 400 from the DeepSeek API.
+    ///
+    /// Providers that don't distinguish reasoning from text (OpenAI by
+    /// default, Anthropic) simply never produce this variant.
+    #[serde(rename = "reasoning")]
+    Reasoning { text: String },
 }
 
 // ---- Convenience constructors ----

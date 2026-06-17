@@ -466,6 +466,7 @@ impl TurnEngine {
                     temperature: None,
                     max_tokens: None,
                     stop_sequences: Vec::new(),
+                    extra_body: None,
                 };
 
                 let mut stream_rx = match provider.stream(request).await {
@@ -610,15 +611,16 @@ impl TurnEngine {
                     }
                 }
 
-                // Flush remaining text. If only reasoning was produced (no text content),
-                // emit it as a TextDelta so consumers always get text.
-                if current_text.is_empty() && !reasoning_text.is_empty() {
-                    let _ = tx
-                        .send(TurnEvent::TextDelta {
-                            delta: reasoning_text.clone(),
-                        })
-                        .await;
-                    current_text = reasoning_text;
+                // Flush remaining text as a TextDelta. Reasoning was
+                // already emitted as ReasoningDelta events during the
+                // turn — do NOT also send it as TextDelta here, that
+                // would conflate reasoning with text in the TUI. If the
+                // model only produced reasoning, the TUI shows it in
+                // ReasoningBlock; text content stays empty.
+                if !current_text.is_empty() {
+                    // clone here so the skill-reference detector below
+                    // can still borrow `current_text`.
+                    let _ = tx.send(TurnEvent::TextDelta { delta: current_text.clone() }).await;
                 }
 
                 // Detect skill reference in assistant text and inject instructions.
@@ -849,6 +851,7 @@ impl TurnEngine {
             temperature: None,
             max_tokens: None,
             stop_sequences: Vec::new(),
+            extra_body: None,
         }
     }
 
@@ -912,13 +915,16 @@ impl TurnEngine {
             }
         }
 
-        // Flush remaining text. If only reasoning was produced (no text content),
-        // treat the reasoning as the response content.
-        if current_text.is_empty() && !reasoning_text.is_empty() {
-            current_text = reasoning_text;
-        }
+        // Flush remaining text as its own ContentPart. Reasoning is NOT
+        // mixed in here — it goes to a separate ContentPart::Reasoning
+        // below. DeepSeek-V4 (thinking mode) requires `reasoning_content`
+        // to be echoed back in any assistant message that also contains
+        // tool calls, so the two streams must stay distinct on disk.
         if !current_text.is_empty() {
             content_parts.push(ContentPart::Text { text: current_text });
+        }
+        if !reasoning_text.is_empty() {
+            content_parts.push(ContentPart::Reasoning { text: reasoning_text });
         }
 
         // Add tool calls.

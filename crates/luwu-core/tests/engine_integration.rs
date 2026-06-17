@@ -152,6 +152,8 @@ fn default_usage() -> LlmUsage {
         prompt_tokens: 100,
         completion_tokens: 50,
         total_tokens: 150,
+        prompt_cache_hit_tokens: 0,
+        prompt_cache_miss_tokens: 0,
     }
 }
 
@@ -263,6 +265,8 @@ async fn budget_injects_wrap_up_hint_after_soft_cap() {
         prompt_tokens: 600_000, // > TOKEN_BUDGET_SOFT_CAP
         completion_tokens: 1000,
         total_tokens: 601_000,
+        prompt_cache_hit_tokens: 0,
+        prompt_cache_miss_tokens: 0,
     };
     let response_sequences = vec![
         // First call: high usage → should trigger budget warning +

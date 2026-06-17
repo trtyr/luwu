@@ -269,6 +269,7 @@ pub async fn summarize_session(
         temperature: Some(0.1),
         max_tokens: Some(2000),
         stop_sequences: vec![],
+        extra_body: None,
     };
 
     let summary = provider

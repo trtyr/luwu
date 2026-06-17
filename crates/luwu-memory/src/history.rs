@@ -136,9 +136,10 @@ impl TokenEstimator {
 
     /// Estimate tokens for a Message (sum of all content parts).
     pub fn estimate_message(&self, msg: &Message) -> usize {
+        use luwu_core::ContentPart;
+
         let mut total = 0;
         for part in &msg.content {
-            use luwu_core::ContentPart;
             match part {
                 ContentPart::Text { text } => total += self.estimate(text),
                 ContentPart::ToolCall {
@@ -156,6 +157,9 @@ impl TokenEstimator {
                 } => {
                     total += self.estimate(content);
                 }
+                // Reasoning/thinking content contributes to token usage,
+                // so we count it the same as plain text.
+                ContentPart::Reasoning { text } => total += self.estimate(text),
             }
         }
         total
@@ -212,5 +216,29 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].role, "user");
         assert_eq!(entries[1].role, "assistant");
+    }
+
+    #[test]
+    fn estimate_message_with_reasoning() {
+        let est = TokenEstimator::default();
+        // Reasoning content should be counted the same as text for token
+        // accounting — a regression in this would silently under-report
+        // context size when models stream their chain-of-thought.
+        let msg = luwu_core::Message {
+            role: luwu_core::Role::Assistant,
+            name: None,
+            tool_call_id: None,
+            content: vec![
+                luwu_core::ContentPart::Text {
+                    text: "answer".into(),
+                },
+                luwu_core::ContentPart::Reasoning {
+                    text: "thinking about the problem".into(),
+                },
+            ],
+        };
+        let n = est.estimate_message(&msg);
+        // "answer" = 6/4=1 + "thinking about the problem" = 25/4=6 → 7
+        assert!(n >= 7, "expected ≥7 tokens, got {n}");
     }
 }

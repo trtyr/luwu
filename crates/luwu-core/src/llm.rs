@@ -37,6 +37,13 @@ pub struct LlmRequest {
     pub max_tokens: Option<u32>,
     /// Stop sequences that end generation early.
     pub stop_sequences: Vec<String>,
+    /// Extra body fields to merge into the request JSON.
+    ///
+    /// Used for provider-specific knobs that don't map to the standard
+    /// OpenAI/Anthropic fields — e.g. DeepSeek's thinking toggle:
+    /// `{"thinking": {"type": "enabled"}}` or `{"thinking": {"type": "disabled"}}`.
+    /// `None` means "don't add anything extra".
+    pub extra_body: Option<Value>,
 }
 
 /// Streaming events emitted by the LLM during a completion.
@@ -67,6 +74,16 @@ pub struct LlmUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    /// Tokens served from provider-side cache (DeepSeek prefix caching,
+    /// Anthropic prompt caching). Default `0` for providers that don't
+    /// report this. Cache-hit tokens are billed at a steep discount
+    /// (~1/50 of cache-miss on DeepSeek V4).
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: u64,
+    /// Tokens NOT served from cache (full price). Default `0` for
+    /// providers that don't report this.
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: u64,
 }
 
 /// Trait for LLM providers.

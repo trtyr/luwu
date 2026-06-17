@@ -311,6 +311,14 @@ async fn consume_stream(
                             prompt_tokens: 0, // Anthropic sends output_tokens here
                             completion_tokens: usage.output_tokens,
                             total_tokens: usage.output_tokens, // Will be corrected by message_start usage
+                            // Anthropic's prompt caching fields are reported
+                            // separately from `usage` here; default to 0
+                            // (Anthropic reports them via the dedicated
+                            // `cache_creation_input_tokens` and
+                            // `cache_read_input_tokens` fields, which we
+                            // don't track in LlmUsage yet).
+                            prompt_cache_hit_tokens: 0,
+                            prompt_cache_miss_tokens: 0,
                         })))
                         .await;
                 }
@@ -420,6 +428,17 @@ fn convert_message(msg: &Message) -> Result<Value> {
                 content.push(serde_json::json!({
                     "type": "text",
                     "text": text,
+                }));
+            }
+            // Anthropic's equivalent of reasoning_content is the
+            // `thinking` content block. Only valid in assistant messages.
+            // We emit it here for completeness; Anthropic will reject it
+            // if the role is wrong, and the API server normalizes the
+            // ordering.
+            ContentPart::Reasoning { text: reasoning } => {
+                content.push(serde_json::json!({
+                    "type": "thinking",
+                    "thinking": reasoning,
                 }));
             }
             ContentPart::ToolCall {

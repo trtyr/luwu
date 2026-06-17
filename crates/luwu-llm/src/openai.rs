@@ -306,6 +306,10 @@ async fn consume_stream(
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 total_tokens: usage.total_tokens,
+                // DeepSeek V4 reports these; OpenAI/most other providers
+                // return None and we default to 0.
+                prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens.unwrap_or(0),
+                prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens.unwrap_or(0),
             });
             let _ = tx.send(Ok(event)).await;
         }
@@ -371,9 +375,17 @@ fn build_request_body(req: &LlmRequest) -> Result<Value> {
         body["stop"] = serde_json::json!(req.stop_sequences);
     }
 
+    // Merge provider-specific extras (DeepSeek's thinking toggle, etc.).
+    // Keys in `req.extra_body` override anything we set above, which is
+    // the right behavior for deliberate overrides like forcing thinking off.
+    if let Some(Value::Object(extras)) = &req.extra_body {
+        for (k, v) in extras {
+            body[k] = v.clone();
+        }
+    }
+
     Ok(body)
 }
-
 /// Convert a provider-agnostic [`Message`] into an OpenAI wire-format JSON value.
 fn convert_message(msg: &Message) -> Result<Value> {
     let role = match msg.role {
@@ -421,11 +433,30 @@ fn convert_message(msg: &Message) -> Result<Value> {
             .collect::<Vec<_>>()
             .join("");
 
-        return Ok(serde_json::json!({
+        // DeepSeek-V4 (thinking mode) requires the assistant's
+        // reasoning_content to be echoed back whenever the same assistant
+        // turn also contains tool calls. The API rejects the request with
+        // a 400 otherwise. For non-tool-call messages DeepSeek ignores
+        // reasoning_content, so we only emit it on this branch.
+        let reasoning: String = msg
+            .content
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Reasoning { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        let mut json = serde_json::json!({
             "role": role,
             "content": if text.is_empty() { Value::Null } else { Value::String(text) },
             "tool_calls": tool_calls,
-        }));
+        });
+        if !reasoning.is_empty() {
+            json["reasoning_content"] = Value::String(reasoning);
+        }
+        return Ok(json);
     }
 
     // Tool result message.
@@ -514,9 +545,17 @@ struct FunctionDelta {
     arguments: Option<String>,
 }
 
+/// OpenAI `usage` object. DeepSeek V4 (and other providers with prefix
+/// caching) add `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`;
+/// OpenAI itself does not. Both fields are optional so the same struct
+/// works for both.
 #[derive(Debug, Deserialize)]
 struct Usage {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_cache_miss_tokens: Option<u64>,
 }

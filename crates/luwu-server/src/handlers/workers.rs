@@ -28,6 +28,7 @@ pub(crate) async fn run_consolidation_writer(
         temperature: Some(0.1),
         max_tokens: Some(4096),
         stop_sequences: vec![],
+        extra_body: None,
     };
     let consolidated = provider
         .complete(request)
@@ -65,12 +66,15 @@ pub(crate) fn messages_to_transcript(messages: &[Message], max_chars: usize) -> 
                 ContentPart::ToolResult {
                     content, is_error, ..
                 } => {
-                    let prefix = if *is_error {
-                        "Tool Error"
-                    } else {
-                        "Tool Result"
-                    };
+                    let prefix = if *is_error { "Tool Error" } else { "Tool Result" };
                     out.push_str(&format!("{prefix}: {content}\n\n"));
+                }
+                // Reasoning/thinking content is rendered as plain text
+                // for the transcript view — the TUI displays it separately
+                // in ReasoningBlock, but for the human-readable transcript
+                // a flat string is fine.
+                ContentPart::Reasoning { text } => {
+                    out.push_str(&format!("{role}: {text}\n\n"));
                 }
             }
             if out.len() > max_chars {
@@ -104,6 +108,7 @@ pub(crate) async fn run_observer_worker(
         temperature: Some(0.1),
         max_tokens: Some(2048),
         stop_sequences: vec![],
+        extra_body: None,
     };
     let output = provider
         .complete(request)
@@ -171,6 +176,7 @@ pub(crate) async fn run_reflector_worker(
         temperature: Some(0.1),
         max_tokens: Some(2048),
         stop_sequences: vec![],
+        extra_body: None,
     };
     let output = provider
         .complete(request)
