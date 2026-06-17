@@ -65,13 +65,13 @@ pub async fn agent_chat(
     let provider = create_provider(&resolved, state.http_client.clone());
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    let service = AgentService::new(
-        state.clone(),
-        provider,
-        resolved,
-        session.data.id.to_string(),
-        working_dir,
-    );
+    let service = AgentService::builder()
+        .state(state.clone())
+        .provider(provider)
+        .resolved(resolved)
+        .session_id(session.data.id.to_string())
+        .working_dir(working_dir)
+        .build();
 
     // ── Run ──
     let model = session.data.model.clone();

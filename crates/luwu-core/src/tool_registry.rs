@@ -1,8 +1,26 @@
 //! Tool registry — manages registered tools and produces LLM-ready definitions.
 //!
-//! The [`ToolRegistry`] holds all tools available to the agent. It can produce
-//! [`ToolDefinition`] lists to send to the LLM, and dispatch tool calls to
-//! the right handler at execution time.
+//! The [`ToolRegistry`] uses a **Builder pattern** to separate registration
+//! from use. Construct via [`ToolRegistry::builder`], register all tools,
+//! then call [`ToolRegistryBuilder::build`] to get an immutable, cheaply-
+//! cloneable registry. Registration after build is impossible by design.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use luwu_core::ToolRegistry;
+//!
+//! // Imagine a struct MyTool that implements the `Tool` trait.
+//! let registry = ToolRegistry::builder()
+//!     .register(Box::new(MyTool))
+//!     .register(Box::new(OtherTool))
+//!     .build();
+//! // `registry` is now an immutable, cheaply-cloneable handle.
+//! let cloned = registry.clone();
+//! tokio::spawn(async move { cloned.execute("my_tool", json!({}), cwd, sid).await });
+//! ```
+//!
+//! For a working example, see the integration tests in the `tests/` directory.
 //!
 //! File history integration: before executing write/edit tools, the registry
 //! calls `track_edit` on the optional `FileHistory` to back up the original file.
@@ -17,39 +35,21 @@ use crate::llm::ToolDefinition;
 use crate::tool::{Tool, ToolContext, ToolOutput};
 
 /// Registry of all tools available to the agent.
+///
+/// Cheaply cloneable (`Arc` inside) and safe to share across async tasks.
+/// Tools can only be registered via [`ToolRegistry::builder`].
 #[derive(Clone)]
 pub struct ToolRegistry {
     tools: Arc<HashMap<String, Box<dyn Tool>>>,
     /// Optional file history for rewind — when set, write/edit tools are
-    /// intercepted to back up original files before modification.
+    /// intercepted to back up the original files before modification.
     file_history: Option<Arc<tokio::sync::Mutex<crate::file_history::FileHistory>>>,
 }
 
 impl ToolRegistry {
-    /// Create an empty registry.
-    pub fn new() -> Self {
-        Self {
-            tools: Arc::new(HashMap::new()),
-            file_history: None,
-        }
-    }
-
-    /// Attach a file history for rewind support.
-    /// Once attached, all write/edit tool calls will be intercepted to
-    /// back up the original file before execution.
-    pub fn with_file_history(
-        mut self,
-        fh: Arc<tokio::sync::Mutex<crate::file_history::FileHistory>>,
-    ) -> Self {
-        self.file_history = Some(fh);
-        self
-    }
-
-    /// Register a tool. If a tool with the same name already exists, it's replaced.
-    pub fn register(&mut self, tool: Box<dyn Tool>) {
-        let tools = Arc::get_mut(&mut self.tools)
-            .expect("ToolRegistry::register called after sharing (Arc is shared). Register tools before sharing the registry.");
-        tools.insert(tool.name().to_string(), tool);
+    /// Start building a new registry.
+    pub fn builder() -> ToolRegistryBuilder {
+        ToolRegistryBuilder::new()
     }
 
     /// Look up a tool by name.
@@ -121,6 +121,54 @@ impl ToolRegistry {
     }
 }
 
+/// Builder for [`ToolRegistry`]. Accumulates tools, then `build()` seals
+/// the registry into an immutable, shareable form. This eliminates the
+/// `Arc::get_mut` panic risk that comes with `register` after `clone`.
+pub struct ToolRegistryBuilder {
+    tools: HashMap<String, Box<dyn Tool>>,
+}
+
+impl ToolRegistryBuilder {
+    /// Create an empty builder.
+    pub fn new() -> Self {
+        Self {
+            tools: HashMap::new(),
+        }
+    }
+
+    /// Register a tool. If a tool with the same name already exists, it's replaced.
+    /// Can be called multiple times in a chain.
+    pub fn register(mut self, tool: Box<dyn Tool>) -> Self {
+        self.tools.insert(tool.name().to_string(), tool);
+        self
+    }
+
+    /// Seal the builder into a [`ToolRegistry`]. After this call, tools
+    /// cannot be added or replaced.
+    pub fn build(self) -> ToolRegistry {
+        ToolRegistry {
+            tools: Arc::new(self.tools),
+            file_history: None,
+        }
+    }
+
+    /// How many tools have been registered so far.
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    /// Has no tool been registered yet?
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+}
+
+impl Default for ToolRegistryBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Extract the file path from a tool's JSON arguments for write/edit tools.
 /// Returns None for tools that don't modify files.
 fn extract_file_path(tool_name: &str, input: &serde_json::Value) -> Option<String> {
@@ -135,9 +183,21 @@ fn extract_file_path(tool_name: &str, input: &serde_json::Value) -> Option<Strin
     }
 }
 
-impl Default for ToolRegistry {
-    fn default() -> Self {
-        Self::new()
+// File history attachment is a setter on the immutable registry, since
+// it doesn't change the tool set.
+impl ToolRegistry {
+    /// Attach a file history for rewind support. Returns a new registry
+    /// (the original is unchanged, since `ToolRegistry` is cheaply cloneable).
+    /// Once attached, all write/edit tool calls will be intercepted to
+    /// back up the original file before execution.
+    pub fn with_file_history(
+        &self,
+        fh: Arc<tokio::sync::Mutex<crate::file_history::FileHistory>>,
+    ) -> Self {
+        Self {
+            tools: Arc::clone(&self.tools),
+            file_history: Some(fh),
+        }
     }
 }
 
@@ -179,8 +239,15 @@ mod tests {
     }
 
     #[test]
+    fn empty_builder() {
+        let b = ToolRegistryBuilder::new();
+        assert!(b.is_empty());
+        assert_eq!(b.len(), 0);
+    }
+
+    #[test]
     fn empty_registry() {
-        let reg = ToolRegistry::new();
+        let reg = ToolRegistry::builder().build();
         assert!(reg.is_empty());
         assert_eq!(reg.len(), 0);
         assert!(reg.tool_names().is_empty());
@@ -188,9 +255,10 @@ mod tests {
     }
 
     #[test]
-    fn register_and_get() {
-        let mut reg = ToolRegistry::new();
-        reg.register(make_tool("bash"));
+    fn builder_register_and_get() {
+        let reg = ToolRegistry::builder()
+            .register(make_tool("bash"))
+            .build();
         assert!(!reg.is_empty());
         assert_eq!(reg.len(), 1);
         assert!(reg.get("bash").is_some());
@@ -198,27 +266,30 @@ mod tests {
     }
 
     #[test]
-    fn register_multiple() {
-        let mut reg = ToolRegistry::new();
-        reg.register(make_tool("bash"));
-        reg.register(make_tool("read"));
-        reg.register(make_tool("write"));
+    fn builder_register_multiple() {
+        let reg = ToolRegistry::builder()
+            .register(make_tool("bash"))
+            .register(make_tool("read"))
+            .register(make_tool("write"))
+            .build();
         assert_eq!(reg.len(), 3);
         assert_eq!(reg.tool_names().len(), 3);
     }
 
     #[test]
-    fn register_replaces_duplicate() {
-        let mut reg = ToolRegistry::new();
-        reg.register(make_tool("bash"));
-        reg.register(make_tool("bash"));
+    fn builder_register_replaces_duplicate() {
+        let reg = ToolRegistry::builder()
+            .register(make_tool("bash"))
+            .register(make_tool("bash"))
+            .build();
         assert_eq!(reg.len(), 1); // replaced, not appended
     }
 
     #[test]
-    fn definitions_match_registered() {
-        let mut reg = ToolRegistry::new();
-        reg.register(make_tool("bash"));
+    fn builder_definitions_match() {
+        let reg = ToolRegistry::builder()
+            .register(make_tool("bash"))
+            .build();
         let defs = reg.definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "bash");
@@ -227,7 +298,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_unknown_tool_errors() {
-        let reg = ToolRegistry::new();
+        let reg = ToolRegistry::builder().build();
         let result = reg
             .execute(
                 "ghost",
@@ -241,8 +312,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_calls_tool() {
-        let mut reg = ToolRegistry::new();
-        reg.register(make_tool("echo"));
+        let reg = ToolRegistry::builder()
+            .register(make_tool("echo"))
+            .build();
         let output = reg
             .execute(
                 "echo",
@@ -257,11 +329,24 @@ mod tests {
 
     #[test]
     fn clone_shares_registry() {
-        let mut reg = ToolRegistry::new();
-        reg.register(make_tool("bash"));
+        let reg = ToolRegistry::builder()
+            .register(make_tool("bash"))
+            .build();
         let cloned = reg.clone();
         assert_eq!(cloned.len(), 1);
         assert!(cloned.get("bash").is_some());
+    }
+
+    /// P0 risk: Arc::get_mut panic on register after clone is now structurally impossible.
+    #[test]
+    fn no_panic_register_after_clone() {
+        let reg = ToolRegistry::builder()
+            .register(make_tool("bash"))
+            .build();
+        let _cloned = reg.clone();
+        // There is no `register` method on `ToolRegistry` anymore — the builder
+        // is the only way to add tools, and it cannot be cloned.
+        // This test passes by virtue of compilation: the unsafe pattern is gone.
     }
 
     #[test]

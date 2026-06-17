@@ -42,11 +42,11 @@ impl AppState {
 }
 
 pub fn builtin_tool_registry() -> ToolRegistry {
-    let mut registry = ToolRegistry::new();
+    let mut builder = ToolRegistry::builder();
     for tool in luwu_tools::all_builtin_tools() {
-        registry.register(tool);
+        builder = builder.register(tool);
     }
-    registry
+    builder.build()
 }
 
 pub fn create_provider(

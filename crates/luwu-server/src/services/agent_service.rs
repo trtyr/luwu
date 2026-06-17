@@ -3,8 +3,17 @@
 //! This is the application layer: it knows about domain concepts (TurnEngine,
 //! CycleState, MemoryStore, workers) but NOT about HTTP/SSE/axum.
 //!
-//! The handler's job is to call [`AgentService::run`] and map [`AgentEvent`]s
-//! to the wire format (SSE JSON, WebSocket frames, CLI output, etc.).
+//! Construct via [`AgentService::builder`], then call [`run`](Self::run)
+//! to get a receiver of [`AgentEvent`]s.
+//!
+//! # Builder pattern
+//!
+//! The handler is responsible for HTTP-gate concerns (try_set_running,
+//! RunningGuard, session lookup, config resolution). Everything else —
+//! the `MemoryStore`, `FileHistory`, `ToolRegistry`, `EventBus`,
+//! `TurnEngine` — is constructed by the builder. This makes the service
+//! testable in isolation (inject mocks via the builder) and keeps the
+//! handler thin.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,7 +26,7 @@ use luwu_core::{
 };
 use luwu_memory::{CorrectionDetector, CorrectionPattern, MemoryStore, compile_summary};
 
-use crate::app::{AppState, builtin_tool_registry};
+use crate::app::AppState;
 use crate::config::ResolvedConfig;
 use crate::handlers::workers::{
     run_consolidation_writer, run_observer_worker, run_reflector_worker,
@@ -73,11 +82,6 @@ impl SessionLog {
 // ---------------------------------------------------------------------------
 
 /// Events emitted by [`AgentService::run`].
-///
-/// Handlers map these to the appropriate transport format.
-/// Every `TurnEvent` from the engine is forwarded as [`AgentEvent::Turn`];
-/// side-effect notifications (checkpoints, consolidation, rebuild) are emitted
-/// alongside the raw events so the client gets full visibility.
 #[derive(Debug)]
 pub enum AgentEvent {
     /// Raw turn event from the engine — serialized for SSE passthrough.
@@ -99,8 +103,7 @@ pub enum AgentEvent {
 /// Orchestrates a single agent turn: correction detection, engine execution,
 /// cycle management, memory worker dispatch, and message persistence.
 ///
-/// Construct this from the transport layer (handler), then call [`run`](Self::run)
-/// to get a receiver of [`AgentEvent`]s.
+/// Construct via [`AgentService::builder`], then call [`run`](Self::run).
 pub struct AgentService {
     state: Arc<AppState>,
     engine: TurnEngine,
@@ -114,70 +117,23 @@ pub struct AgentService {
 }
 
 impl AgentService {
-    /// Build a service for the given session.
+    /// Start building an [`AgentService`].
     ///
-    /// The handler is responsible for `try_set_running`, `RunningGuard`, session
-    /// lookup, and config resolution — those involve HTTP status-code decisions
-    /// that don't belong in the service layer.
-    #[tracing::instrument(skip_all)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        state: Arc<AppState>,
-        provider: Arc<dyn LlmProvider>,
-        resolved: ResolvedConfig,
-        session_id: String,
-        working_dir: PathBuf,
-    ) -> Self {
-        let luwu_home = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".luwu");
-        let memory = Arc::new(MemoryStore::new(&luwu_home, &working_dir, &session_id));
-
-        let session_dir = luwu_home.join("sessions").join(&session_id);
-        let file_history = Arc::new(tokio::sync::Mutex::new(
-            luwu_core::file_history::FileHistory::new(&session_dir, &working_dir),
-        ));
-        let session_log = SessionLog::new(&session_dir);
-
-        let tools = builtin_tool_registry().with_file_history(file_history.clone());
-        let events = EventBus::new(256);
-        let engine = TurnEngine::new(
-            provider.clone(),
-            tools,
-            state.skills.clone(),
-            events,
-            working_dir.clone(),
-        );
-
-        session_log.info(&format!(
-            "AgentService created — model={}, session={}",
-            resolved.model, session_id
-        ));
-
-        Self {
-            state,
-            engine,
-            memory,
-            provider,
-            resolved,
-            session_id,
-            working_dir,
-            file_history,
-            session_log,
-        }
+    /// Required inputs are passed to builder methods; everything else
+    /// (MemoryStore, FileHistory, ToolRegistry, TurnEngine, EventBus) is
+    /// constructed inside [`AgentServiceBuilder::build`].
+    pub fn builder() -> AgentServiceBuilder {
+        AgentServiceBuilder::new()
     }
 
     /// Run the agent turn and return a receiver of enriched events.
     ///
-    /// This method:
     /// 1. Detects corrections in the user message and saves them.
     /// 2. Starts the engine stream.
     /// 3. Spawns a background task that consumes engine events, manages cycles,
     ///    dispatches memory workers, persists messages, and forwards
     ///    [`AgentEvent`]s through the channel.
     /// 4. Resets `is_running` on completion (safety net alongside `RunningGuard`).
-    ///
-    /// The channel closes when the turn completes, is cancelled, or errors.
     #[tracing::instrument(skip(self))]
     pub async fn run(
         self,
@@ -424,5 +380,153 @@ impl AgentService {
         });
 
         rx
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AgentServiceBuilder — chainable input for AgentService
+// ---------------------------------------------------------------------------
+
+/// Chainable builder for [`AgentService`].
+///
+/// All inputs are required; call [`build`](Self::build) to construct the
+/// service. Internal components (MemoryStore, FileHistory, ToolRegistry,
+/// TurnEngine, EventBus) are constructed inside `build` so the handler
+/// doesn't have to know about them.
+pub struct AgentServiceBuilder {
+    state: Option<Arc<AppState>>,
+    provider: Option<Arc<dyn LlmProvider>>,
+    resolved: Option<ResolvedConfig>,
+    session_id: Option<String>,
+    working_dir: Option<PathBuf>,
+    /// Override the default tool registry (for tests).
+    tools: Option<luwu_core::ToolRegistry>,
+}
+
+impl AgentServiceBuilder {
+    /// Create an empty builder. All required fields must be set before
+    /// calling [`build`](Self::build).
+    pub fn new() -> Self {
+        Self {
+            state: None,
+            provider: None,
+            resolved: None,
+            session_id: None,
+            working_dir: None,
+            tools: None,
+        }
+    }
+
+    pub fn state(mut self, state: Arc<AppState>) -> Self {
+        self.state = Some(state);
+        self
+    }
+
+    pub fn provider(mut self, provider: Arc<dyn LlmProvider>) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    pub fn resolved(mut self, resolved: ResolvedConfig) -> Self {
+        self.resolved = Some(resolved);
+        self
+    }
+
+    pub fn session_id(mut self, id: impl Into<String>) -> Self {
+        self.session_id = Some(id.into());
+        self
+    }
+
+    pub fn working_dir(mut self, dir: PathBuf) -> Self {
+        self.working_dir = Some(dir);
+        self
+    }
+
+    /// Inject a custom tool registry (mostly for tests).
+    pub fn tools(mut self, tools: luwu_core::ToolRegistry) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    /// Build the [`AgentService`]. Panics if any required input is missing —
+    /// this is a programmer error caught at construction time.
+    #[tracing::instrument(skip_all)]
+    pub fn build(self) -> AgentService {
+        let state = self
+            .state
+            .expect("AgentServiceBuilder: state is required");
+        let provider = self
+            .provider
+            .expect("AgentServiceBuilder: provider is required");
+        let resolved = self
+            .resolved
+            .expect("AgentServiceBuilder: resolved is required");
+        let session_id = self
+            .session_id
+            .expect("AgentServiceBuilder: session_id is required");
+        let working_dir = self
+            .working_dir
+            .expect("AgentServiceBuilder: working_dir is required");
+
+        let luwu_home = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".luwu");
+        let memory = Arc::new(MemoryStore::new(&luwu_home, &working_dir, &session_id));
+
+        let session_dir = luwu_home.join("sessions").join(&session_id);
+        let file_history = Arc::new(tokio::sync::Mutex::new(
+            luwu_core::file_history::FileHistory::new(&session_dir, &working_dir),
+        ));
+        let session_log = SessionLog::new(&session_dir);
+
+        // Build the tool registry: either the injected one (tests) or the
+        // built-in one with file history attached.
+        let tools = self
+            .tools
+            .unwrap_or_else(crate::app::builtin_tool_registry)
+            .with_file_history(file_history.clone());
+
+        let events = EventBus::new(256);
+        let engine = TurnEngine::new(
+            provider.clone(),
+            tools,
+            state.skills.clone(),
+            events,
+            working_dir.clone(),
+        );
+
+        session_log.info(&format!(
+            "AgentService created — model={}, session={}",
+            resolved.model, session_id
+        ));
+
+        AgentService {
+            state,
+            engine,
+            memory,
+            provider,
+            resolved,
+            session_id,
+            working_dir,
+            file_history,
+            session_log,
+        }
+    }
+}
+
+impl Default for AgentServiceBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_empty_fails() {
+        let result = std::panic::catch_unwind(|| AgentService::builder().build());
+        assert!(result.is_err());
     }
 }
