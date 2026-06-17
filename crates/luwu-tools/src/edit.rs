@@ -253,7 +253,7 @@ async fn execute_text_edit(
     let count = content.matches(old_text).count();
 
     if count > 0 {
-        return apply_replacement(
+        return apply_replacement(Replacement::new(
             content,
             old_text,
             new_text,
@@ -262,7 +262,7 @@ async fn execute_text_edit(
             path,
             canonical,
             MatchTier::Strict,
-        )
+        ))
         .await;
     }
 
@@ -275,7 +275,7 @@ async fn execute_text_edit(
         && let Some((actual_old, actual_count)) =
             find_resilient_match(content, old_text, &norm_old, replace_all)
     {
-        return apply_replacement(
+        return apply_replacement(Replacement::new(
             content,
             &actual_old,
             new_text,
@@ -284,7 +284,7 @@ async fn execute_text_edit(
             path,
             canonical,
             MatchTier::Resilient,
-        )
+        ))
         .await;
     }
 
@@ -316,64 +316,109 @@ enum MatchTier {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_replacement(
-    content: &str,
-    old_text: &str,
-    new_text: &str,
+// ---------------------------------------------------------------------------
+// Replacement — bundles the 8 parameters that apply_replacement used to take
+// (fixes clippy::too_many_arguments)
+// ---------------------------------------------------------------------------
+
+/// A single edit to apply. Bundles the target file, the old/new text, the
+/// match tier, and the count of matches found. Replaces the previous
+/// 8-parameter signature of `apply_replacement` (fixes
+/// `clippy::too_many_arguments`).
+struct Replacement<'a> {
+    /// Full file contents before the edit.
+    content: &'a str,
+    /// The text to find. Already verified to match `count` times in `content`.
+    old_text: &'a str,
+    /// The text to substitute in.
+    new_text: &'a str,
+    /// If true, replace every occurrence. If false, replace only the first.
     replace_all: bool,
+    /// How many occurrences of `old_text` were found in `content`.
     count: usize,
-    path: &str,
-    canonical: &std::path::Path,
+    /// Original path string (for error messages and tracing).
+    path: &'a str,
+    /// Canonical filesystem path (for `tokio::fs::write`).
+    canonical: &'a std::path::Path,
+    /// Which matching tier succeeded (Strict / Resilient).
     tier: MatchTier,
-) -> Result<ToolOutput> {
+}
+
+impl<'a> Replacement<'a> {
+    fn new(
+        content: &'a str,
+        old_text: &'a str,
+        new_text: &'a str,
+        replace_all: bool,
+        count: usize,
+        path: &'a str,
+        canonical: &'a std::path::Path,
+        tier: MatchTier,
+    ) -> Self {
+        Self {
+            content,
+            old_text,
+            new_text,
+            replace_all,
+            count,
+            path,
+            canonical,
+            tier,
+        }
+    }
+}
+
+/// Apply a pre-validated replacement to the file on disk. Returns a
+/// `ToolOutput` describing the result or an error.
+async fn apply_replacement(r: Replacement<'_>) -> Result<ToolOutput> {
     // Multiple matches guard.
-    if count > 1 && !replace_all {
-        let line_nums = find_match_lines(content, old_text);
+    if r.count > 1 && !r.replace_all {
+        let line_nums = find_match_lines(r.content, r.old_text);
         let lines_str = format_line_ranges(&line_nums);
 
         return Ok(ToolOutput::error(format!(
-            "`old_text` was found {} times in `{path}` (lines: {lines_str}), \
+            "`old_text` was found {} times in `{}` (lines: {lines_str}), \
              but `replace_all` is false so only the first would be replaced.\n\n\
              Options:\n\
              - Set `replace_all` to true to replace all {} occurrences.\n\
              - Include more surrounding context in `old_text` to match a single occurrence.\n\
              - Use `read` to view the specific lines and craft a more precise match.",
-            count, count
+            r.count, r.path, r.count
         )));
     }
 
-    let new_content = if replace_all {
-        content.replace(old_text, new_text)
+    let new_content = if r.replace_all {
+        r.content.replace(r.old_text, r.new_text)
     } else {
-        content.replacen(old_text, new_text, 1)
+        r.content.replacen(r.old_text, r.new_text, 1)
     };
 
-    let replaced = if replace_all { count } else { 1 };
+    let replaced = if r.replace_all { r.count } else { 1 };
 
     info!(
-        path = %path,
-        occurrences = count,
+        path = %r.path,
+        occurrences = r.count,
         replaced,
-        tier = ?tier,
+        tier = ?r.tier,
         "Editing file"
     );
 
     // Write back.
-    tokio::fs::write(canonical, &new_content)
+    tokio::fs::write(r.canonical, &new_content)
         .await
         .map_err(|e| {
-            luwu_core::LuwuError::Tool(format!("Failed to write changes to `{path}`: {e}"))
+            luwu_core::LuwuError::Tool(format!("Failed to write changes to `{}`: {e}", r.path))
         })?;
 
-    let old_lines = old_text.lines().count();
-    let new_lines = new_text.lines().count();
-    let action = if new_text.is_empty() {
+    let old_lines = r.old_text.lines().count();
+    let new_lines = r.new_text.lines().count();
+    let action = if r.new_text.is_empty() {
         "Deleted"
     } else {
         "Replaced"
     };
 
-    let tier_note = match tier {
+    let tier_note = match r.tier {
         MatchTier::Strict => String::new(),
         MatchTier::Resilient => "\nNote: Matched via resilient mode (whitespace-normalized). \
              The indentation or spacing in the file differed slightly from your `old_text`."
@@ -381,8 +426,8 @@ async fn apply_replacement(
     };
 
     Ok(ToolOutput::text(format!(
-        "{action} {replaced} occurrence(s) in `{path}` ({} lines → {} lines){tier_note}",
-        old_lines, new_lines
+        "{action} {replaced} occurrence(s) in `{}` ({} lines → {} lines){tier_note}",
+        r.path, old_lines, new_lines
     )))
 }
 
