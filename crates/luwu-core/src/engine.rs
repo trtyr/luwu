@@ -469,6 +469,9 @@ impl TurnEngine {
                 }
 
                 // Detect skill reference in assistant text and inject instructions.
+                // P0 fix: skills are system instructions, not user input — use Role::System
+                // to avoid role confusion and prompt-injection-style attacks where the
+                // model treats skill content as a user message.
                 if let Some(skill_name) = skills.detect_skill_reference(&current_text)
                     && let Some(skill) = skills.get(&skill_name)
                 {
@@ -478,7 +481,7 @@ impl TurnEngine {
                         skill.name, skill.instructions
                     );
                     all_messages.push(crate::message::Message {
-                        role: crate::message::Role::User,
+                        role: crate::message::Role::System,
                         content: vec![crate::message::ContentPart::Text { text: inject }],
                         name: None,
                         tool_call_id: None,

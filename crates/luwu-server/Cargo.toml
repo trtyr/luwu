@@ -30,6 +30,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tracing-appender = { workspace = true }
 async-stream = { workspace = true }
 futures = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

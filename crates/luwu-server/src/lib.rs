@@ -7,5 +7,6 @@ pub mod app;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod pid_file;
 pub mod services;
 pub mod types;

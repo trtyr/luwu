@@ -16,6 +16,7 @@
 use luwu_core::SessionManager;
 use luwu_server::app::AppState;
 use luwu_server::config::{Config, LoggingConfig};
+use luwu_server::pid_file::PidFile;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -162,16 +163,22 @@ async fn main() {
 
     match mode {
         RunMode::Daemon => {
-            let pid_file = luwu_home.join("luwu.pid");
-            let _ = std::fs::create_dir_all(&luwu_home);
-            let _ = std::fs::write(&pid_file, std::process::id().to_string());
-            tracing::info!("Daemon PID {} → {}", std::process::id(), pid_file.display());
+            // Use the new PidFile module for atomic write + stale detection.
+            // This eliminates the silent errors of the old `let _ = std::fs::write` pattern.
+            let pid_file = PidFile::at(luwu_home.join("luwu.pid"));
+            // If a previous daemon crashed without cleanup, remove its stale PID file.
+            pid_file.cleanup_stale();
+            match pid_file.write() {
+                Ok(pid) => tracing::info!("Daemon PID {pid} → {}", pid_file.path().display()),
+                Err(e) => tracing::warn!(error = %e, "Failed to write PID file (continuing anyway)"),
+            }
 
-            // Clean up PID file on exit
-            let pid_file_clone = pid_file.clone();
+            // Clean up PID file on signal-based shutdown.
+            let pf_for_signal = pid_file.path_buf();
             tokio::spawn(async move {
                 shutdown_signal().await;
-                let _ = std::fs::remove_file(&pid_file_clone);
+                let pf = PidFile::at(pf_for_signal);
+                pf.cleanup();
                 tracing::info!("Daemon shutting down (signal)");
                 std::process::exit(0);
             });
@@ -204,10 +211,9 @@ async fn main() {
                             continue;
                         }
                         tracing::info!("No TUI activity for {IDLE_SHUTDOWN_SECS}s — auto-shutdown");
-                        let pf = dirs::home_dir()
-                            .map(|h| h.join(".luwu").join("luwu.pid"))
-                            .unwrap_or_default();
-                        let _ = std::fs::remove_file(&pf);
+                        if let Some(pf) = PidFile::default_path() {
+                            pf.cleanup();
+                        }
                         std::process::exit(0);
                     }
                 }

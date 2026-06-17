@@ -34,6 +34,7 @@ tracing-appender = "0.2"
 async-stream = "0.3"
 serde_yaml = "0.9"
 fff-search = "0.9"
+libc = "0.2"
 
 [profile.release]
 opt-level = 3
