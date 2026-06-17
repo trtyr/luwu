@@ -531,20 +531,20 @@ impl TurnEngine {
                                         soft_cap: TOKEN_BUDGET_SOFT_CAP,
                                     })
                                     .await;
-                                // Inject a system message so the LLM
-                                // knows to wrap up on the next iteration.
-                                let hint = format!(
-                                    "⚠️ Token budget nearly exhausted ({} / {} used).\n\
+                                // Append the wrap-up hint to `system_prompt`
+                                // rather than pushing a `Role::System` message
+                                // into `all_messages`. OpenAI/Anthropic APIs
+                                // reject role-alternation breaks (a system
+                                // message in the middle of user/assistant
+                                // turns causes a 400), and `system_prompt` is
+                                // the only correct place for system-level
+                                // guidance. Same fix as the Skill injection.
+                                system_prompt.push_str(&format!(
+                                    "\n\n⚠️ Token budget nearly exhausted ({} / {} used).\n\
                                      Wrap up your current task and provide a final summary.\n\
                                      Do NOT start new sub-tasks or call additional tools.",
                                     total_usage.total_tokens, TOKEN_BUDGET_SOFT_CAP
-                                );
-                                all_messages.push(Message {
-                                    role: crate::message::Role::System,
-                                    content: vec![crate::message::ContentPart::Text { text: hint }],
-                                    name: None,
-                                    tool_call_id: None,
-                                });
+                                ));
                             } else if !budget_warned
                                 && total_usage.total_tokens
                                     > TOKEN_BUDGET_SOFT_CAP * TOKEN_BUDGET_WARN_PCT / 100
