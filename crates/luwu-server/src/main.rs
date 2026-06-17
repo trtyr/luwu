@@ -165,6 +165,15 @@ async fn main() {
         .timeout(Duration::from_secs(120))
         .connect_timeout(Duration::from_secs(10))
         .pool_idle_timeout(Duration::from_secs(90))
+        // Identify as a coding agent so providers (e.g. Z.AI/GLM) that
+        // distinguish tool traffic by User-Agent can route correctly.
+        // Format mirrors the convention of curl/Claude Code: "name/version
+        // (purpose; homepage)". The (coding-agent) tag matches the category
+        // Z.AI lists for GLM Coding Plan integration.
+        .user_agent(format!(
+            "luwu/{} (coding-agent; +https://github.com/trtyr/luwu)",
+            env!("CARGO_PKG_VERSION")
+        ))
         .build()
         .expect("failed to build shared HTTP client");
 
