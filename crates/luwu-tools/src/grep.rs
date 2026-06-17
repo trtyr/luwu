@@ -417,39 +417,234 @@ fn get_or_create_picker(canonical: &PathBuf) -> SharedFilePicker {
 
 /// Check if the file index is stale by comparing directory mtime with build time.
 /// Returns true if the index should be rebuilt.
+///
+/// Staleness signals (any one is enough):
+/// 1. The directory's own mtime is newer than `built_at` (catches top-level
+///    new file creation).
+/// 2. Any subdirectory up to `MAX_STALENESS_DEPTH` levels deep has an mtime
+///    newer than `built_at` (catches new/modified files in deep subdirs).
+/// 3. The index is older than the safety-valve threshold
+///    (catches content-only edits that don't bump mtime, e.g. atomic
+///    write-and-rename within the same second).
+const MAX_STALENESS_DEPTH: usize = 4;
+const MAX_STALENESS_ENTRIES_PER_DIR: usize = 64;
+const STALENESS_SAFETY_VALVE_SECS: u64 = 60;
+
 fn is_index_stale(dir: &PathBuf, built_at: SystemTime) -> bool {
-    // Check the directory's own mtime — catches new file creation.
-    if let Ok(metadata) = std::fs::metadata(dir)
-        && let Ok(dir_mtime) = metadata.modified()
-        && dir_mtime > built_at
-    {
+    // 1. Top-level directory mtime.
+    if dir_is_newer_than(dir, built_at) {
         return true;
     }
 
-    // Also check a few common subdirectories (crate dirs, src dirs).
-    // This catches files added to subdirectories where the top-level mtime didn't change.
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir()
-                && let Ok(metadata) = entry.metadata()
-                && let Ok(mtime) = metadata.modified()
-                && mtime > built_at
-            {
-                return true;
-            }
-            // Stop after checking first few entries for performance.
-            break;
-        }
+    // 2. Recursive subdirectory mtime check (bounded depth + entries per dir
+    //    so pathological trees don't blow up the check).
+    if any_descendant_is_newer_than(dir, built_at, 0) {
+        return true;
     }
 
-    // Safety valve: if built more than 60 seconds ago, force a rebuild check.
-    // This catches cases where mtime doesn't change (e.g. file content edits).
-    // But limit frequency to prevent thrashing.
+    // 3. Safety valve.
     if let Ok(elapsed) = built_at.elapsed()
-        && elapsed.as_secs() > 60
+        && elapsed.as_secs() > STALENESS_SAFETY_VALVE_SECS
     {
         return true;
     }
 
     false
+}
+
+/// Returns true if `dir` exists and its mtime is strictly after `t`.
+fn dir_is_newer_than(dir: &std::path::Path, t: SystemTime) -> bool {
+    std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .map(|mtime| mtime > t)
+        .unwrap_or(false)
+}
+
+/// Returns true if any descendant directory up to `MAX_STALENESS_DEPTH`
+/// levels deep has an mtime strictly after `t`. Bounded by
+/// `MAX_STALENESS_ENTRIES_PER_DIR` to keep worst-case work predictable.
+fn any_descendant_is_newer_than(
+    dir: &std::path::Path,
+    t: SystemTime,
+    depth: usize,
+) -> bool {
+    if depth >= MAX_STALENESS_DEPTH {
+        return false;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    let mut count = 0usize;
+    for entry in entries.flatten() {
+        if count >= MAX_STALENESS_ENTRIES_PER_DIR {
+            break;
+        }
+        count += 1;
+        let path = entry.path();
+        let is_dir = entry
+            .file_type()
+            .map(|ft| ft.is_dir())
+            .unwrap_or(false);
+        // Skip symlinks to avoid cycles.
+        let is_symlink = entry
+            .file_type()
+            .map(|ft| ft.is_symlink())
+            .unwrap_or(false);
+        if is_symlink {
+            continue;
+        }
+        if is_dir {
+            if dir_is_newer_than(&path, t) {
+                return true;
+            }
+            if any_descendant_is_newer_than(&path, t, depth + 1) {
+                return true;
+            }
+        } else {
+            // Also check file mtimes — catches the case where a file inside
+            // an existing subdir was edited (which doesn't bump the subdir
+            // mtime but DOES bump the file mtime).
+            if let Ok(meta) = entry.metadata()
+                && let Ok(mtime) = meta.modified()
+                && mtime > t
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Tests for cache staleness detection (review P2 #24).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod cache_staleness_tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    /// Create a unique temp directory for the test. Auto-cleaned via
+    /// `tempfile`-style naming. Each test gets its own dir.
+    fn make_tempdir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("luwu_grep_test_{tag}_{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn fresh_dir_is_not_stale() {
+        let dir = make_tempdir("fresh");
+        let built_at = SystemTime::now();
+        sleep(Duration::from_millis(50));
+        assert!(!is_index_stale(&dir, built_at));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn top_level_new_file_makes_stale() {
+        let dir = make_tempdir("topfile");
+        let built_at = SystemTime::now();
+        sleep(Duration::from_millis(1100)); // ensure mtime resolution
+        fs::write(dir.join("new.rs"), "fn main() {}").unwrap();
+        assert!(is_index_stale(&dir, built_at));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deep_subdir_new_file_makes_stale() {
+        // This is the review P2 #24 bug: top-level mtime didn't change when
+        // a file was added to a deep subdir, so the old `break`-after-first
+        // implementation missed it.
+        let dir = make_tempdir("deepfile");
+        let nested = dir.join("crates").join("luwu-core").join("src");
+        fs::create_dir_all(&nested).unwrap();
+        let built_at = SystemTime::now();
+        sleep(Duration::from_millis(1100));
+        fs::write(nested.join("new.rs"), "// hidden deep").unwrap();
+        assert!(
+            is_index_stale(&dir, built_at),
+            "deep subdir new file should trigger rebuild"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deep_subdir_edit_makes_stale() {
+        let dir = make_tempdir("deepedit");
+        let nested = dir.join("crates").join("luwu-core").join("src");
+        fs::create_dir_all(&nested).unwrap();
+        let target = nested.join("existing.rs");
+        fs::write(&target, "v1").unwrap();
+        let built_at = SystemTime::now();
+        sleep(Duration::from_millis(1100));
+        fs::write(&target, "v2 — content changed").unwrap();
+        assert!(
+            is_index_stale(&dir, built_at),
+            "file mtime change in deep subdir should trigger rebuild"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unchanged_tree_is_not_stale() {
+        let dir = make_tempdir("unchanged");
+        let nested = dir.join("a").join("b").join("c");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("file.txt"), "content").unwrap();
+        // Build index slightly after creating files.
+        sleep(Duration::from_millis(1100));
+        let built_at = SystemTime::now();
+        // Immediately after — nothing changed.
+        assert!(!is_index_stale(&dir, built_at));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn depth_limit_protects_against_pathological_trees() {
+        // 10 levels deep — beyond MAX_STALENESS_DEPTH=4. A new file at
+        // level 10 should NOT be detected (intentional — we cap depth to
+        // bound work). Safety valve catches it after 60s.
+        let dir = make_tempdir("deeppath");
+        let mut path = dir.clone();
+        for i in 0..10 {
+            path = path.join(format!("level{i}"));
+        }
+        fs::create_dir_all(&path).unwrap();
+        let built_at = SystemTime::now();
+        sleep(Duration::from_millis(1100));
+        fs::write(path.join("deep.txt"), "way too deep").unwrap();
+        // Recursive check won't find it (depth cap), safety valve hasn't
+        // elapsed yet. So it should NOT be detected as stale yet.
+        let just_now = SystemTime::now();
+        assert!(
+            !is_index_stale(&dir, just_now),
+            "depth-capped staleness check should miss files at level 10 (intentional)"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn entry_limit_protects_against_wide_trees() {
+        // 200 files at top level — beyond MAX_STALENESS_ENTRIES_PER_DIR=64.
+        // Only the first 64 entries are checked.
+        let dir = make_tempdir("wide");
+        let built_at = SystemTime::now();
+        sleep(Duration::from_millis(1100));
+        for i in 0..200 {
+            fs::write(dir.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        // Should still detect staleness because the cap hits within the
+        // first 64, and the new files bump the top-level mtime.
+        assert!(is_index_stale(&dir, built_at));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
