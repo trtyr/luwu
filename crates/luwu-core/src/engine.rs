@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::error::{LuwuError, Result};
 use crate::event::{Event, EventBus, TurnEvent, TurnId};
@@ -22,7 +22,35 @@ use crate::llm::{LlmEvent, LlmProvider, LlmRequest};
 use crate::message::{ContentPart, Message};
 use crate::prompt::system_prompt_with_tools_and_skills;
 use crate::session::SessionData;
+use crate::stuckness::{Stuckness, StucknessGuard};
 use crate::tool_registry::ToolRegistry;
+
+// ---------------------------------------------------------------------------
+// Safety valve configuration
+// ---------------------------------------------------------------------------
+//
+// luwu deliberately does NOT cap the agent loop at a fixed iteration
+// count. Long tasks (50+ tool calls, exploring many different tools)
+// should be allowed to run as long as they make progress.
+//
+// Instead, the loop uses two soft signals:
+//
+// 1. **StucknessGuard** (sliding window of recent tool calls) detects
+//    lack of progress: N consecutive identical `(tool, args)` calls, or
+//    a 2-call cycle (A→B→A→B) with identical unordered fingerprints.
+//    When detected, the loop emits `TurnEvent::Stuck` and breaks.
+//
+// 2. **Token budget** (soft cap on cumulative tokens per turn). When
+//    exceeded, the engine injects a system message asking the LLM to
+//    wrap up. The LLM decides how to conclude (e.g. summarize, give a
+//    final answer, defer to next turn). This is NOT a hard stop.
+
+/// Soft cap on cumulative tokens per turn. When `total_usage` exceeds
+/// this, the engine injects a system message asking the LLM to wrap up.
+const TOKEN_BUDGET_SOFT_CAP: u64 = 500_000;
+
+/// Percent of soft cap at which to log a `warn!` (no message injection).
+const TOKEN_BUDGET_WARN_PCT: u64 = 80;
 
 // ---------------------------------------------------------------------------
 // Turn result
@@ -95,21 +123,10 @@ pub struct TurnEngine {
     skills: crate::skill::SkillRegistry,
     events: EventBus,
     working_dir: PathBuf,
-    /// Defensive cap on agent loop iterations.
-    ///
-    /// Even though `CancelToken` covers user-initiated cancellation, a runaway
-    /// LLM (e.g. stuck calling the same tool in a loop) needs an automatic
-    /// hard stop. Default 100 is generous enough for complex tool chains but
-    /// low enough to bound resource consumption. Configurable via
-    /// [`TurnEngine::with_max_iterations`].
-    max_iterations: u32,
 }
 
 impl TurnEngine {
     /// Create a new turn engine.
-    ///
-    /// `max_iterations` defaults to 100 as a defensive cap. Use
-    /// [`TurnEngine::with_max_iterations`] to override.
     pub fn new(
         provider: std::sync::Arc<dyn LlmProvider>,
         tools: ToolRegistry,
@@ -123,18 +140,7 @@ impl TurnEngine {
             skills,
             events,
             working_dir,
-            max_iterations: Self::DEFAULT_MAX_ITERATIONS,
         }
-    }
-
-    /// Default iteration cap. Generous for complex tool chains, low enough to
-    /// bound resource consumption if the LLM gets stuck.
-    pub const DEFAULT_MAX_ITERATIONS: u32 = 100;
-
-    /// Override the iteration cap. Pass `u32::MAX` to effectively disable.
-    pub fn with_max_iterations(mut self, n: u32) -> Self {
-        self.max_iterations = n;
-        self
     }
 
     /// Run a single turn: send the user message through the full agent loop.
@@ -168,24 +174,12 @@ impl TurnEngine {
         // The agentic loop.
         let mut iteration = 0;
         let mut last_usage = None;
+        // Stuckness detection runs in lockstep with the loop. See the
+        // module doc in `stuckness.rs` for the design rationale.
+        let mut stuck_guard = StucknessGuard::new();
 
         loop {
             iteration += 1;
-            // Defensive iteration cap against runaway LLM loops.
-            // CancelToken handles user cancellation, but a buggy LLM
-            // stuck calling the same tool in a loop needs an automatic
-            // hard stop to bound resource consumption.
-            if iteration > self.max_iterations {
-                warn!(
-                    iteration,
-                    max = self.max_iterations,
-                    "Max iterations reached, aborting turn"
-                );
-                return Err(LuwuError::Llm(format!(
-                    "max iterations ({}) reached",
-                    self.max_iterations
-                )));
-            }
 
             result.llm_calls += 1;
 
@@ -288,6 +282,27 @@ impl TurnEngine {
                     let result_msg = Message::tool_result(call_id, output.content, output.is_error);
                     session.push_message(result_msg.clone());
                     result.messages.push(result_msg);
+
+                    // Stuckness check: feed the tool call into the
+                    // sliding-window detector. If it reports stuck,
+                    // return an error to the caller. A legitimate long
+                    // task that calls many different tools with
+                    // different args never triggers this.
+                    match stuck_guard.record(&tool_name, &arguments) {
+                        Stuckness::NotStuck => {}
+                        Stuckness::Repeated { tool, count } => {
+                            tracing::warn!(tool = %tool, count, "Stuckness detected (repeat)");
+                            return Err(LuwuError::Llm(format!(
+                                "Stuckness detected: tool '{tool}' called with identical arguments {count} times consecutively"
+                            )));
+                        }
+                        Stuckness::Cycling { tool, count } => {
+                            tracing::warn!(tool = %tool, count, "Stuckness detected (cycle)");
+                            return Err(LuwuError::Llm(format!(
+                                "Stuckness detected: {count}-step cycle involving '{tool}'"
+                            )));
+                        }
+                    }
                 }
             }
 
@@ -346,12 +361,17 @@ impl TurnEngine {
         let events = self.events.clone();
         let working_dir = self.working_dir.clone();
         let mut system_prompt = system_prompt_with_tools_and_skills(&tools.tool_names(), &skills);
-        // Clone fields used by the spawned task. `self` is borrowed by the
-        // outer method so anything captured by the async move block must be
-        // moved (or owned). `u32` is Copy so a plain `let` is enough.
-        let max_iterations = self.max_iterations;
-
+        // Safety valve: stuckness detection runs in lockstep with the
+        // agent loop. A legitimate long task that explores many different
+        // tools with different arguments never triggers this; a runaway
+        // LLM stuck in a (tool, args) loop or A→B→A→B cycle does.
+        //
+        // The guard + flag must live INSIDE the spawned task so they
+        // share scope with `tx` and the per-iteration `all_messages`
+        // mutation.
         tokio::spawn(async move {
+            let mut stuck_guard = StucknessGuard::new();
+            let mut budget_warned = false;
             if let Some(cancel) = &cancel
                 && cancel.is_cancelled()
             {
@@ -388,23 +408,6 @@ impl TurnEngine {
                 }
 
                 iteration += 1;
-                // Defensive iteration cap against runaway LLM loops.
-                if iteration > max_iterations {
-                    tracing::warn!(
-                        iteration,
-                        max = max_iterations,
-                        "Max iterations reached, aborting turn"
-                    );
-                    let _ = tx
-                        .send(TurnEvent::Error {
-                            message: format!(
-                                "max iterations ({}) reached",
-                                max_iterations
-                            ),
-                        })
-                        .await;
-                    break;
-                }
                 tracing::debug!("Iteration {} started", iteration);
 
                 llm_calls += 1;
@@ -506,6 +509,53 @@ impl TurnEngine {
                             total_usage.completion_tokens += usage.completion_tokens;
                             total_usage.total_tokens += usage.total_tokens;
                             last_usage = usage.clone();
+
+                            // Token budget soft check. At 80% of the soft
+                            // cap, log a warn only. At 100%, emit
+                            // `TurnEvent::BudgetWarning` and inject a
+                            // system message asking the LLM to wrap up.
+                            // The LLM gets to decide how to conclude —
+                            // this is not a hard stop.
+                            if !budget_warned
+                                && total_usage.total_tokens > TOKEN_BUDGET_SOFT_CAP
+                            {
+                                budget_warned = true;
+                                tracing::warn!(
+                                    total_tokens = total_usage.total_tokens,
+                                    soft_cap = TOKEN_BUDGET_SOFT_CAP,
+                                    "Token budget soft cap exceeded; injecting wrap-up hint"
+                                );
+                                let _ = tx
+                                    .send(TurnEvent::BudgetWarning {
+                                        used_tokens: total_usage.total_tokens,
+                                        soft_cap: TOKEN_BUDGET_SOFT_CAP,
+                                    })
+                                    .await;
+                                // Inject a system message so the LLM
+                                // knows to wrap up on the next iteration.
+                                let hint = format!(
+                                    "⚠️ Token budget nearly exhausted ({} / {} used).\n\
+                                     Wrap up your current task and provide a final summary.\n\
+                                     Do NOT start new sub-tasks or call additional tools.",
+                                    total_usage.total_tokens, TOKEN_BUDGET_SOFT_CAP
+                                );
+                                all_messages.push(Message {
+                                    role: crate::message::Role::System,
+                                    content: vec![crate::message::ContentPart::Text { text: hint }],
+                                    name: None,
+                                    tool_call_id: None,
+                                });
+                            } else if !budget_warned
+                                && total_usage.total_tokens
+                                    > TOKEN_BUDGET_SOFT_CAP * TOKEN_BUDGET_WARN_PCT / 100
+                            {
+                                tracing::warn!(
+                                    total_tokens = total_usage.total_tokens,
+                                    soft_cap = TOKEN_BUDGET_SOFT_CAP,
+                                    pct = TOKEN_BUDGET_WARN_PCT,
+                                    "Token budget warning threshold reached"
+                                );
+                            }
                         }
 
                         LlmEvent::Error(msg) => {
@@ -662,6 +712,47 @@ impl TurnEngine {
                         Message::tool_result(tc.id.clone(), output.content, output.is_error);
                     all_messages.push(result_msg);
                     tool_calls_count += 1;
+
+                    // Stuckness check: feed the tool call into the
+                    // sliding-window detector. On stuck, emit
+                    // `TurnEvent::Stuck` and return so the spawned task
+                    // ends cleanly. A legitimate long task that calls
+                    // many different tools with different args never
+                    // triggers this.
+                    //
+                    // Re-parse `tc.arguments` here because the original
+                    // `args` Value was moved into the tool executor.
+                    let stuck_args: serde_json::Value =
+                        serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
+                    match stuck_guard.record(&tc.name, &stuck_args) {
+                        Stuckness::NotStuck => {}
+                        Stuckness::Repeated { tool, count } => {
+                            let reason = format!(
+                                "Tool '{tool}' called with identical arguments {count} times consecutively — agent appears to be stuck."
+                            );
+                            tracing::warn!(tool = %tool, count, "Stuckness detected (repeat)");
+                            let _ = tx
+                                .send(TurnEvent::Stuck {
+                                    tool: tool.clone(),
+                                    reason,
+                                })
+                                .await;
+                            return;
+                        }
+                        Stuckness::Cycling { tool, count } => {
+                            let reason = format!(
+                                "Detected a {count}-step cycle involving '{tool}' — agent appears to be stuck in a fixed pattern."
+                            );
+                            tracing::warn!(tool = %tool, count, "Stuckness detected (cycle)");
+                            let _ = tx
+                                .send(TurnEvent::Stuck {
+                                    tool: tool.clone(),
+                                    reason,
+                                })
+                                .await;
+                            return;
+                        }
+                    }
                 }
 
                 // Emit iteration end.

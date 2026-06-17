@@ -27,6 +27,7 @@ pub mod prompt;
 pub mod session;
 pub mod session_manager;
 pub mod skill;
+pub mod stuckness;
 pub mod tool;
 pub mod tool_registry;
 
@@ -48,5 +49,6 @@ pub use session_manager::{
     ManagedSession, RunningGuard, SessionManager, SessionSummary, TrySetRunningError,
 };
 pub use skill::{Skill, SkillFrontmatter, SkillRegistry};
+pub use stuckness::{Stuckness, StucknessGuard};
 pub use tool::{Tool, ToolContext, ToolOutput};
 pub use tool_registry::ToolRegistry;
