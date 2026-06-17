@@ -7,17 +7,26 @@
 // PROGRESSIVE COMMIT (two triggers):
 //   1. tool_completed → commitBlocksToStatic(commitEnd) moves tool blocks
 //      to <Static> immediately
-//   2. text_delta where last text block exceeds MAX_DYNAMIC_LINES →
-//      commitTextOverflow() splits: early lines → <Static>, recent N lines
-//      stay in dynamic area. This is the CRITICAL fix for Ink's
-//      clearTerminal nuclear option — when the dynamic area exceeds
-//      terminal rows, Ink erases the whole screen and rewrites from the
-//      top, causing flicker + scroll-jump. Long text without tool calls
-//      (e.g. a 60-line explanation) previously caused this.
+//   2. text_delta where last text block exceeds MAX_DYNAMIC_LINES or
+//      MAX_DYNAMIC_CHARS → commitTextOverflow() splits: early part goes
+//      to <Static> (enters scrollback), recent part stays in dynamic area.
+//      This is the CRITICAL fix for Ink's clearTerminal nuclear option —
+//      when the dynamic area exceeds terminal rows, Ink erases the whole
+//      screen and rewrites from the top, causing flicker + scroll-jump.
 //   3. done event → final commitBlocksToStatic + setStreamingMessage(null)
 //      + setPhase('ready') all batched in the same microtask, so React
 //      renders "new static + empty dynamic" atomically (no intermediate
 //      "dynamic shrinks but no new static" flash).
+//
+// CRITICAL BUG FIX (commitTextOverflow + currentText trimming):
+//   `currentText` is the SSE delta accumulator. After commitTextOverflow
+//   splits a text block, `currentText` MUST be trimmed to the recent part.
+//   Otherwise the next flushText() will write the FULL currentText
+//   (including the already-committed early part) back into the recent
+//   block, and the NEXT commitTextOverflow() will re-commit the SAME
+//   early part to <Static> — causing the same content to appear 2-3
+//   times in scrollback. This was the root cause of the "AI reply shown
+//   multiple times" bug.
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
@@ -227,7 +236,8 @@ export function useChatSession(): ChatSession {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    /** Commit blocks[0..endIdx] to <Static> as a partial assistant message */
+    /** Commit blocks[committedBlockCount..endIdx] to <Static> as a partial
+     *  assistant message. The committed text enters terminal scrollback. */
     const commitBlocksToStatic = (endIdx: number) => {
       if (endIdx <= committedBlockCount) return;
       const toCommit = blocks.slice(committedBlockCount, endIdx).map(b => ({ ...b }));
@@ -249,12 +259,12 @@ export function useChatSession(): ChatSession {
       committedBlockCount = endIdx;
     };
 
-    // FIX 1: Progressive text overflow commit.
+    // FIX 1 + DUPLICATION FIX: Progressive text overflow commit.
     // ────────────────────────────────────────────────────────────────────
-    // When a text block grows beyond MAX_DYNAMIC_LINES (or has too many
-    // characters for one line), split it: the early part is committed to
-    // <Static> (enters scrollback permanently), the recent MAX_DYNAMIC_LINES
-    // stay in the dynamic area for continued streaming.
+    // When a text block grows beyond MAX_DYNAMIC_LINES (or has more than
+    // MAX_DYNAMIC_CHARS in a single line), split it: the early part is
+    // committed to <Static> (enters scrollback permanently), the recent
+    // part stays in the dynamic area for continued streaming.
     //
     // This is the CRITICAL fix for Ink's clearTerminal nuclear option:
     // when the dynamic area exceeds terminal rows, Ink erases the whole
@@ -262,6 +272,16 @@ export function useChatSession(): ChatSession {
     // Long AI explanations (e.g. 60 lines of Markdown) without any tool
     // calls previously caused this. Now the dynamic area stays bounded
     // at MAX_DYNAMIC_LINES regardless of total response length.
+    //
+    // DUPLICATION BUG FIX: After split, `currentText` MUST be trimmed
+    // to the recent part. The SSE delta accumulator `currentText` still
+    // holds the full text, so the next flushText() will overwrite the
+    // recent block with the full text (including the just-committed
+    // early part). Without trimming, every new text_delta would
+    // resurrect the committed content in the recent block, and the
+    // next split would re-commit it to <Static> — causing the AI reply
+    // to appear 2-3 times in scrollback. This is the root cause of the
+    // "AI reply shown multiple times" bug.
     // ────────────────────────────────────────────────────────────────────
     const MAX_DYNAMIC_LINES = 15;
     const MAX_DYNAMIC_CHARS = 2000;
@@ -279,32 +299,51 @@ export function useChatSession(): ChatSession {
       const lastText = blocks[lastTextIdx] as { type: 'text'; text: string };
       const lines = lastText.text.split('\n');
 
-      if (lines.length <= MAX_DYNAMIC_LINES && lastText.text.length <= MAX_DYNAMIC_CHARS) {
+      // Decide where to split (or skip if not overflow).
+      // Two overflow triggers:
+      //   (a) many lines → split by line count, keep last MAX_DYNAMIC_LINES
+      //   (b) single long line → split at last \n before char budget
+      let splitAt: number;
+      if (lines.length > MAX_DYNAMIC_LINES) {
+        splitAt = lines.length - MAX_DYNAMIC_LINES;
+      } else if (lastText.text.length > MAX_DYNAMIC_CHARS) {
+        // Single-line overflow: find the last \n before the char budget
+        // so we don't cut a word in half. Fallback to char-budget if no \n.
+        const charBudget = lastText.text.length - MAX_DYNAMIC_CHARS;
+        let lastNewline = -1;
+        for (let i = 0; i < charBudget && i < lastText.text.length; i++) {
+          if (lastText.text[i] === '\n') lastNewline = i;
+        }
+        splitAt = lastNewline >= 0 ? lastNewline + 1 : charBudget;
+      } else {
         return; // not overflow yet
       }
 
-      // Split: keep last MAX_DYNAMIC_LINES lines in dynamic area,
-      // commit everything before that to <Static>.
-      const splitAt = Math.max(0, lines.length - MAX_DYNAMIC_LINES);
-      const earlyLines = lines.slice(0, splitAt);
-      const recentLines = lines.slice(splitAt);
+      if (splitAt <= 0 || splitAt >= lastText.text.length) return;
 
-      if (earlyLines.length === 0) return; // nothing to commit
+      const earlyText = lastText.text.slice(0, splitAt);
+      const recentText = lastText.text.slice(splitAt);
 
-      const earlyText = earlyLines.join('\n');
-      const recentText = recentLines.join('\n');
+      if (earlyText.length === 0 || recentText.length === 0) return;
 
       // Replace the last text block with the recent part
       blocks[lastTextIdx] = { type: 'text', text: recentText };
 
       // Insert a new block for the early part BEFORE the recent part
-      const earlyBlock: AssistantBlock = { type: 'text', text: earlyText };
-      blocks.splice(lastTextIdx, 0, earlyBlock);
+      blocks.splice(lastTextIdx, 0, { type: 'text', text: earlyText } as AssistantBlock);
 
       // Commit blocks[committedBlockCount..lastTextIdx+1] to <Static>.
       // After this, committedBlockCount = lastTextIdx + 1, and the
       // uncommitted region starts at lastTextIdx + 1 (the recent text).
       commitBlocksToStatic(lastTextIdx + 1);
+
+      // ── CRITICAL: trim currentText to the recent part ──
+      // Without this, the next flushText() will put the FULL currentText
+      // (including the already-committed early part) back into the
+      // recent block, and the next commitTextOverflow() will re-commit
+      // the SAME early part to <Static> — causing the same content to
+      // appear 2-3 times in scrollback.
+      currentText = recentText;
     };
 
     // ── Throttle: batch React state updates to prevent flickering ──
